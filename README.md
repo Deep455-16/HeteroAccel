@@ -1,95 +1,121 @@
-# Adaptive GPU Runtime — Phase 1-2
+# Adaptive GPU Runtime
 
-Phase 1: vendor-neutral hardware/Vulkan/CUDA detection.
-Phase 2: a real, vendor-neutral Vulkan compute backend (vector addition),
-CPU-reference-validated, with an honest CPU-vs-GPU benchmark.
+Universal Adaptive GPU Acceleration Runtime (HeteroAccel). A heterogeneous, hardware-aware local AI execution runtime that dynamically distributes AI computation across CPU and GPU.
 
-## Build — Windows (target platform)
+Currently in **Phase 3**: Real LLM Inference via `llama.cpp` and Vulkan GPU offloading.
 
-Requirements:
-- Visual Studio 2022 or 2026 (MSVC), "Desktop development with C++" workload
-- CMake >= 3.20 (bundled with VS, or standalone)
-- Vulkan SDK installed from https://vulkan.lunarg.com (sets `VULKAN_SDK`
-  env var, which `find_package(Vulkan)` picks up automatically; it also
-  provides `glslangValidator`, used to compile the Phase 2 shader)
+## Architecture
+
+```
+User Application / CLI
+       │
+HeteroAccel Runtime
+       │
+llama.cpp Adapter (LlamaCppEngine)
+       │
+llama.cpp (via FetchContent)
+       │
+ggml_vulkan backend
+       │
+Intel Iris Xe (or other Vulkan GPU)
+```
+
+## Phases
+
+### Phase 1: Hardware Detection (Verified)
+- CPU detection (vendor, architecture, physical/logical cores)
+- RAM detection
+- GPU classification (Integrated/Dedicated, VRAM, Shared system memory)
+- Vulkan detection (loader, devices, compute queues)
+- CUDA detection (with honest unavailable reporting)
+
+### Phase 2: Vulkan Compute Backend (Verified)
+- Native Vulkan vector-addition backend
+- Buffer management (handles Iris Xe unified memory efficiently without staging)
+- `glslangValidator` shader compilation
+- CPU vs GPU benchmark
+
+### Phase 3: Real LLM Inference (Verified)
+- Integration of `llama.cpp` (Vulkan-enabled, shallow-cloned at configure time)
+- Loading external GGUF models
+- CPU-only inference reference mode
+- Vulkan GPU offloaded inference mode
+- Honest metrics (tokens/sec, load time, generation time, backend, actual GPU layers)
+
+---
+
+## Build Requirements (Windows)
+
+- Visual Studio 2022 or 2026 (MSVC)
+- CMake >= 3.20
+- Vulkan SDK (must include `glslangValidator`)
+- **~2 GB free disk space** (llama.cpp source + build artifacts + GGUF model)
 
 ```powershell
+# 1. Configure (will download llama.cpp, takes a few minutes)
 cmake -S . -B build -A x64
+
+# 2. Build Release (llama.cpp is large, takes 5-15 mins)
 cmake --build build --config Release
+
+# 3. Test (model-dependent tests will cleanly SKIP if no model is found)
+ctest --test-dir build -C Release --output-on-failure
+```
+
+---
+
+## Running Phase 3 (LLM Inference)
+
+### 1. Get a GGUF Model
+We do **not** commit models to the repository. You must download one.
+Recommended for Intel Iris Xe testing:
+- **Qwen2.5-0.5B-Instruct-Q4_K_M.gguf** (~394 MB)
+- **TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf** (~669 MB)
+
+Place the model anywhere on your machine (e.g., `C:\models\Qwen.gguf`).
+
+### 2. Basic Inference (Auto GPU Offload)
+```powershell
+.\build\Release\adaptive-gpu.exe llm `
+    --model "C:\models\Qwen.gguf" `
+    --prompt "Explain what Vulkan is in one sentence."
+```
+*The runtime will automatically intercept llama.cpp logs to confirm whether the Vulkan backend was genuinely used and on which device.*
+
+### 3. CPU Reference Mode
+```powershell
+.\build\Release\adaptive-gpu.exe llm `
+    --model "C:\models\Qwen.gguf" `
+    --cpu `
+    --prompt "Explain what Vulkan is in one sentence."
+```
+
+### 4. CPU vs Vulkan Benchmark
+Runs a side-by-side inference comparison using the same model and prompt.
+```powershell
+.\build\Release\adaptive-gpu.exe benchmark llm `
+    --model "C:\models\Qwen.gguf"
+```
+> **Note on Integrated GPUs**: It is completely normal for a Vulkan-offloaded run on an integrated GPU to be slower than the CPU run for small models. CPU-to-integrated-GPU synchronization and kernel launch overhead often outweigh the parallelization benefit for small workloads. This runtime accurately measures and reports this reality rather than fabricating fake speedups.
+
+### 5. Using the Environment Variable
+To avoid passing `--model` every time, set the environment variable:
+```powershell
+$env:HETEROACCEL_MODEL_PATH = "C:\models\Qwen.gguf"
+
+# Now the tests that require a model will automatically run instead of skipping
 ctest --test-dir build -C Release --output-on-failure
 
+# And CLI commands work without --model
+.\build\Release\adaptive-gpu.exe llm --prompt "Hello"
+```
+
+---
+
+## Phase 1 & 2 Commands
+
+```powershell
 .\build\Release\adaptive-gpu.exe hardware
 .\build\Release\adaptive-gpu.exe hardware --json
 .\build\Release\adaptive-gpu.exe benchmark vulkan
 ```
-
-(No `-G` specified — CMake auto-detects your installed Visual Studio.
-A ready-to-run end-to-end verification script that performs all of the
-above and logs everything is at `verify_phase2.ps1`.)
-
-CUDA needs no SDK install to be *detected* — it dynamically loads
-`nvcuda.dll` only if present. CUDA Toolkit is only needed later (Phase
-3+) for actual compute/inference.
-
-The compute shader (`shaders/vector_add.comp`) is compiled to SPIR-V by
-`glslangValidator` as part of the CMake build — nothing is committed as
-a binary — and copied next to `adaptive-gpu.exe` automatically.
-
-## Build — Linux (dev/CI convenience only — NOT the Phase 1/2 target)
-
-```bash
-sudo apt-get install -y cmake build-essential libvulkan-dev glslang-tools
-cmake -S . -B build
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-./build/adaptive-gpu hardware --json
-./build/adaptive-gpu benchmark vulkan
-```
-
-On a machine with no GPU (e.g. a headless CI box), the two GPU-dependent
-tests (`test_vulkan_vector_add_correctness`, `test_vulkan_buffer_transfer`)
-correctly report **SKIPPED** (CTest exit code 77) rather than a fake pass.
-
-The Linux code paths (CPU via `/proc/cpuinfo`, GPU via
-`/sys/class/drm`) exist only so this repo is buildable/testable outside
-Windows during development. They are intentionally simpler than the
-Windows paths and are not held to the same Definition-of-Done bar.
-
-## What "detected" means here
-
-Every value in the output comes from a real system call — nothing is
-hardcoded or fabricated. If a backend (Vulkan, CUDA, or a GPU) isn't
-present, the tool says so explicitly with a reason, rather than
-inventing a plausible-looking number.
-
-## Status of verification against the target hardware
-
-**Phase 1** was independently verified on the real target machine
-(Windows, MSVC/Visual Studio, Intel i5-1235U + Iris Xe): build succeeds,
-all 6 Phase 1 tests pass, Iris Xe is detected, Vulkan 1.4 loader / 1.3
-device support is detected, and a compute-capable queue is reported.
-
-**Phase 2** was implemented and built/tested in a Linux CI/sandbox
-container with **no GPU device present**, so:
-
-- Vector-add correctness (CPU reference vs GPU), buffer upload/download
-  round-trip, real `vkCreateInstance`→dispatch→fence-wait execution:
-  **NOT VERIFIED here** — `test_vulkan_vector_add_correctness` and
-  `test_vulkan_buffer_transfer` correctly report SKIPPED, because
-  `vkCreateInstance` fails with `VK_ERROR_INCOMPATIBLE_DRIVER` on this
-  container (no ICD/GPU) — the same honest failure path Phase 1's
-  detector already reported.
-- Everything that *can* run without a GPU was run for real: the shader
-  compiles from source via `glslangValidator`, the full project builds
-  clean with `-Wall -Wextra` and zero warnings, the CPU reference
-  implementation is unit-tested, the backend's graceful-failure path
-  (`initialize()` returns false with a specific reason) is exercised for
-  real, and the benchmark's CPU timings and "N/A" GPU-unavailable
-  formatting are verified with a test double.
-- DXGI/WinAPI code and the `<codecvt>`→`WideCharToMultiByte` fix remain
-  Windows-only and unverified outside MSVC, same caveat as Phase 1.
-
-Running `ctest` and `adaptive-gpu benchmark vulkan` on the real Iris Xe
-machine is the remaining step to close out Phase 2 — that will exercise
-the two currently-skipped tests for real and produce genuine CPU-vs-GPU
-numbers instead of a Linux-container "N/A".
