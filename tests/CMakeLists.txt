@@ -1,6 +1,7 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_core)
+    # For Phase 3, we link agr_llm which brings in agr_core and llama
+    target_link_libraries(${test_name} PRIVATE agr_llm agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -25,8 +26,22 @@ agr_add_test(test_benchmark_formatting test_benchmark_formatting.cpp)
 # calls (catches the vkAllocateDescriptorSets failed bug fixed in Phase 2).
 agr_add_test(test_vulkan_descriptor_reuse test_vulkan_descriptor_reuse.cpp)
 
+# Phase 3
+agr_add_test(test_llm_availability test_llm_availability.cpp)
+agr_add_test(test_llm_model_path test_llm_model_path.cpp)
+agr_add_test(test_llm_cpu_inference test_llm_cpu_inference.cpp)
+agr_add_test(test_llm_vulkan_inference test_llm_vulkan_inference.cpp)
+agr_add_test(test_llm_mode_distinction test_llm_mode_distinction.cpp)
+
 # GPU-dependent tests report CTest's SKIP code (77) instead of a fake pass
 # when no Vulkan compute device is present in the environment running them.
-set_tests_properties(test_vulkan_vector_add_correctness test_vulkan_buffer_transfer
-                     test_vulkan_descriptor_reuse
-    PROPERTIES SKIP_RETURN_CODE 77)
+# Phase 3 model-dependent tests also skip (77) if HETEROACCEL_MODEL_PATH is missing.
+set_tests_properties(
+    test_vulkan_vector_add_correctness 
+    test_vulkan_buffer_transfer
+    test_vulkan_descriptor_reuse
+    test_llm_cpu_inference
+    test_llm_vulkan_inference
+    test_llm_mode_distinction
+    PROPERTIES SKIP_RETURN_CODE 77
+)

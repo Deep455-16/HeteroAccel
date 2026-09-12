@@ -57,7 +57,51 @@ else()
     message(WARNING "Neither glslangValidator nor glslc was found. Phase 2's compute shader cannot be compiled -- install the Vulkan SDK (it includes both) and reconfigure.")
 endif()
 
-add_library(agr_core
+# =============================================================================
+# Phase 3: llama.cpp external dependency (fetched at configure time)
+# =============================================================================
+# llama.cpp is fetched via CMake FetchContent at a pinned tag.
+# GIT_SHALLOW TRUE keeps the download small (~150 MB instead of ~500 MB).
+# We disable all extras we don't need to keep build times and disk usage down.
+# GGML_VULKAN=ON enables the Vulkan compute backend inside llama.cpp/ggml.
+#
+# NOTE: First configure will download llama.cpp from GitHub.
+#       Ensure internet access and ~2 GB free disk space.
+# =============================================================================
+include(FetchContent)
+
+set(GGML_VULKAN          ON  CACHE BOOL "Enable Vulkan backend in ggml/llama.cpp" FORCE)
+set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA            OFF CACHE BOOL "Disable CUDA (not present on target machine)" FORCE)
+set(BUILD_SHARED_LIBS    OFF CACHE BOOL "Force static libraries" FORCE)
+
+FetchContent_Declare(
+    llama_cpp
+    GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git
+    GIT_TAG        b9999
+    GIT_SHALLOW    TRUE
+    GIT_PROGRESS   TRUE
+)
+
+message(STATUS "Fetching llama.cpp b9999 (first run may take several minutes) ...")
+FetchContent_MakeAvailable(llama_cpp)
+message(STATUS "llama.cpp ready.")
+
+# Suppress W4 warnings in llama.cpp code (we can't fix upstream warnings)
+if(MSVC AND TARGET llama)
+    target_compile_options(llama PRIVATE /W0)
+endif()
+if(MSVC AND TARGET ggml)
+    target_compile_options(ggml PRIVATE /W0)
+endif()
+
+# =============================================================================
+# agr_core — Phase 1 + Phase 2 (unchanged from c3fc2f2)
+# =============================================================================
+add_library(agr_core STATIC
     src/hardware/CPUDetector.cpp
     src/hardware/MemoryDetector.cpp
     src/hardware/GPUDetector.cpp
@@ -98,8 +142,21 @@ endif()
 
 add_dependencies(agr_core agr_shaders)
 
+# =============================================================================
+# agr_llm — Phase 3: llama.cpp adapter
+# =============================================================================
+add_library(agr_llm STATIC
+    src/llm/LlamaCppEngine.cpp
+)
+target_include_directories(agr_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# llama target exposes its own include dirs (llama.h, ggml.h) transitively
+target_link_libraries(agr_llm PUBLIC agr_core llama)
+
+# =============================================================================
+# adaptive-gpu — main CLI executable (Phase 1, 2, 3)
+# =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
