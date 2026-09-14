@@ -46,8 +46,8 @@ public:
 
     bool        isInitialized()        const { return initialized_; }
     std::string lastError()            const { return lastError_; }
-    std::string detectedVulkanDevice() const { return vulkanDevice_; }
-    bool        vulkanConfirmed()      const { return vulkanConfirmed_; }
+    std::string detectedVulkanDevice() const { return s_vulkanDevice_; }
+    bool        vulkanConfirmed()      const { return s_vulkanConfirmed_; }
     int         gpuLayersActual()      const { return gpuLayersActual_; }
     double      modelLoadMs()          const { return modelLoadMs_; }
 
@@ -64,9 +64,6 @@ private:
     bool        initialized_     = false;
     bool        backendInited_   = false;
 
-    // Populated by logCallback during initialize()
-    bool        vulkanConfirmed_ = false;
-    std::string vulkanDevice_;
     int         gpuLayersActual_ = 0;
 
     double      modelLoadMs_     = 0.0;
@@ -74,6 +71,10 @@ private:
 
     // Global state for the log-capture window (set/cleared in initialize)
     static LlamaCppEngine* s_currentEngine_;
+    
+    // Global state for Vulkan discovery (llama.cpp only logs this once per process)
+    static bool        s_vulkanConfirmed_;
+    static std::string s_vulkanDevice_;
 };
 
 } // namespace agr
