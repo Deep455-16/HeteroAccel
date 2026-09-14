@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstring>
+#include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -18,6 +19,8 @@ namespace agr {
 // llama_log_set callback can route messages to the right engine instance.
 // ---------------------------------------------------------------------------
 LlamaCppEngine* LlamaCppEngine::s_currentEngine_ = nullptr;
+bool LlamaCppEngine::s_vulkanConfirmed_ = false;
+std::string LlamaCppEngine::s_vulkanDevice_;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -35,14 +38,12 @@ double nowMs() {
 // Global log callback (llama.cpp allows exactly one)
 // ---------------------------------------------------------------------------
 void LlamaCppEngine::logCallback(int /*level*/, const char* text, void* /*user_data*/) {
-    if (!s_currentEngine_ || !text) return;
-    LlamaCppEngine* eng = s_currentEngine_;
-
+    if (!text) return;
     std::string msg(text);
-
+    
     // Detect Vulkan initialization
     if (msg.find("ggml_vulkan") != std::string::npos) {
-        eng->vulkanConfirmed_ = true;
+        s_vulkanConfirmed_ = true;
 
         // Extract device name from a line like:
         // "ggml_vulkan: Using device 0: Intel(R) Iris(R) Xe Graphics ..."
@@ -57,10 +58,13 @@ void LlamaCppEngine::logCallback(int /*level*/, const char* text, void* /*user_d
                 auto first = device.find_first_not_of(" \t\r\n");
                 auto last  = device.find_last_not_of(" \t\r\n");
                 if (first != std::string::npos)
-                    eng->vulkanDevice_ = device.substr(first, last - first + 1);
+                    s_vulkanDevice_ = device.substr(first, last - first + 1);
             }
         }
     }
+
+    if (!s_currentEngine_) return;
+    LlamaCppEngine* eng = s_currentEngine_;
 
     // Detect GPU layer count from lines like:
     // "llm_load_tensors: offloaded 24/24 layers to GPU"
@@ -154,7 +158,7 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
     }
 
     // Populate actual GPU layer count if not captured from logs
-    if (gpuLayersActual_ == 0 && vulkanConfirmed_ && config_.effective_gpu_layers() > 0) {
+    if (gpuLayersActual_ == 0 && s_vulkanConfirmed_ && config_.effective_gpu_layers() > 0) {
         // llama.cpp may have loaded all requested layers; use requested count as best estimate
         gpuLayersActual_ = config_.effective_gpu_layers();
     }
@@ -179,9 +183,9 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt) {
     // -----------------------------------------------------------------------
     result.gpu_layers_requested = config_.effective_gpu_layers();
     result.gpu_layers_actual    = gpuLayersActual_;
-    result.vulkan_confirmed     = vulkanConfirmed_;
-    result.device_name          = vulkanDevice_;
-    result.backend              = (vulkanConfirmed_ && config_.effective_gpu_layers() > 0)
+    result.vulkan_confirmed     = s_vulkanConfirmed_;
+    result.device_name          = s_vulkanDevice_;
+    result.backend              = (s_vulkanConfirmed_ && config_.effective_gpu_layers() > 0)
                                       ? "Vulkan" : "CPU";
     result.model_load_ms        = modelLoadMs_;
 
@@ -302,9 +306,7 @@ void LlamaCppEngine::shutdown() {
         backendInited_ = false;
     }
     initialized_     = false;
-    vulkanConfirmed_ = false;
     gpuLayersActual_ = 0;
-    vulkanDevice_.clear();
     lastError_.clear();
 }
 
