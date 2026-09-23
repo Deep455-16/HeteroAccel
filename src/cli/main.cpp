@@ -6,6 +6,8 @@
 #include "llm/LlmConfig.h"
 #include "llm/LlmResult.h"
 #include "mem/MemoryManager.h"
+#include "backend/BackendManager.h"
+#include "backend/DeviceSelector.h"
 
 #include <algorithm>
 #include <chrono>
@@ -355,8 +357,57 @@ void printUsage() {
     std::cout << "    --gpu-layers <N>    GPU layers for Vulkan run (default: 99)\n";
     std::cout << "    --max-tokens <N>    Token limit (default: 64)\n\n";
     std::cout << "  Set HETEROACCEL_MODEL_PATH env var as an alternative to --model.\n\n";
-    std::cout << "  adaptive-gpu memory                Show Phase 4 Unified Memory Manager stats\n\n";
+    std::cout << "  adaptive-gpu devices               Hardware discovery + auto backend selection\n";
+    std::cout << "  adaptive-gpu memory                Unified Memory Manager stats\n";
     std::cout << "  adaptive-gpu --help                Show this message\n";
+}
+
+int runDevicesCommand() {
+    std::cout << "HeteroAccel Hardware Configuration\n";
+    std::cout << "===================================\n\n";
+
+    agr::VulkanBackend backend;
+    agr::BackendManager mgr(backend);
+    mgr.discover();
+
+    const auto& all = mgr.allDevices();
+    for (const auto& dev : all) {
+        std::cout << agr::toString(dev.backend) << "\n";
+        std::cout << "  Name:    " << dev.name << "\n";
+        if (!dev.vendor.empty() && dev.vendor != agr::toString(dev.backend))
+            std::cout << "  Vendor:  " << dev.vendor << "\n";
+        if (!dev.api_version.empty())
+            std::cout << "  API:     " << dev.api_version << "\n";
+        if (dev.memory_capacity > 0)
+            std::cout << "  Memory:  "
+                      << (dev.memory_capacity / (1024.0*1024.0*1024.0)) << " GB\n";
+        if (dev.compute_units > 0)
+            std::cout << "  Cores:   " << dev.compute_units << "\n";
+        std::cout << "  Status:  "
+                  << (dev.is_available ? "AVAILABLE" : "UNAVAILABLE") << "\n";
+        if (!dev.unavailable_reason.empty())
+            std::cout << "  Reason:  " << dev.unavailable_reason << "\n";
+        std::cout << "  Score:   " << dev.compute_score << "\n\n";
+    }
+
+    // Automatic selection
+    agr::WorkloadHint hint;
+    hint.prefer_gpu       = true;
+    hint.compute_intensive = true;
+    hint.required_memory  = 0;
+    agr::DeviceSelector   selector(mgr);
+    agr::ComputeDevice    selected = selector.selectDevice(hint);
+
+    std::cout << "Backend Decision (automatic)\n";
+    std::cout << "  Primary Accelerator: " << agr::toString(selected.backend)
+              << " (" << selected.name << ")\n";
+    bool cpuFallback = mgr.isBackendAvailable(agr::ComputeBackend::CPU)
+                       && selected.backend != agr::ComputeBackend::CPU;
+    std::cout << "  CPU Fallback:        "
+              << (cpuFallback ? "ENABLED" : "N/A (CPU is primary)") << "\n\n";
+    std::cout << "HeteroAccel selects backends automatically.\n";
+    std::cout << "CUDA and Vulkan are implementation details hidden from the caller.\n";
+    return 0;
 }
 
 int runMemoryCommand() {
@@ -458,6 +509,10 @@ int main(int argc, char** argv) {
     
     if (args[0] == "memory") {
         return runMemoryCommand();
+    }
+
+    if (args[0] == "devices") {
+        return runDevicesCommand();
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";

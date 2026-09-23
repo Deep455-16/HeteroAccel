@@ -169,10 +169,22 @@ target_include_directories(agr_mem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_mem PUBLIC agr_core)
 
 # =============================================================================
+# agr_backend — Phase 4: Automatic Backend Selection
+# CPU, Vulkan, and CUDA are discovered uniformly; the user never chooses.
+# =============================================================================
+add_library(agr_backend STATIC
+    src/backend/BackendManager.cpp
+    src/backend/DeviceSelector.cpp
+    src/backend/CUDAAllocator.cpp
+)
+target_include_directories(agr_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_backend PUBLIC agr_core agr_mem)
+
+# =============================================================================
 # adaptive-gpu — main CLI executable (Phase 1, 2, 3, 4)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
