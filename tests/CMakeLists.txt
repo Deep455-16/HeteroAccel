@@ -1,6 +1,6 @@
-﻿function(agr_add_test test_name source_file)
+function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -63,3 +63,11 @@ set_tests_properties(
     test_backend_auto_select
     PROPERTIES SKIP_RETURN_CODE 77
 )
+
+# Phase 5 - Adaptive Heterogeneous Scheduler
+agr_add_test(test_sched_cpu_only test_sched_cpu_only.cpp)
+agr_add_test(test_sched_cost_model test_sched_cost_model.cpp)
+agr_add_test(test_sched_oom_rejection test_sched_oom_rejection.cpp)
+agr_add_test(test_sched_residency_bias test_sched_residency_bias.cpp)
+agr_add_test(test_sched_feedback_loop test_sched_feedback_loop.cpp)
+agr_add_test(test_sched_fallback test_sched_fallback.cpp)

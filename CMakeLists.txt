@@ -181,10 +181,25 @@ target_include_directories(agr_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_backend PUBLIC agr_core agr_mem)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1, 2, 3, 4)
+# agr_scheduler — Phase 5: Adaptive Heterogeneous Scheduler
+# Decides where and when to execute workloads based on cost models and telemetry.
+# =============================================================================
+add_library(agr_scheduler STATIC
+    src/scheduler/PerformanceHistory.cpp
+    src/scheduler/CostModel.cpp
+    src/scheduler/CPUWorker.cpp
+    src/scheduler/VulkanWorker.cpp
+    src/scheduler/CUDAWorker.cpp
+    src/scheduler/AdaptiveScheduler.cpp
+)
+target_include_directories(agr_scheduler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_scheduler PUBLIC agr_core agr_mem agr_backend)
+
+# =============================================================================
+# adaptive-gpu — main CLI executable (Phase 1, 2, 3, 4, 5)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
