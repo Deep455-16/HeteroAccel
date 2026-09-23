@@ -1,4 +1,4 @@
-﻿// src/mem/MemoryTypes.h
+// src/mem/MemoryTypes.h
 //
 // Hardware-independent memory abstractions for Phase 4.
 // No Vulkan/CUDA headers included here.
@@ -12,7 +12,7 @@
 
 namespace agr {
 
-enum class MemoryLocation { CPU, GPU, DISK };
+enum class MemoryLocation { CPU, GPU, ACCELERATOR, DISK };
 enum class MemoryState    { FREE, RESIDENT, LOADING, EVICTING };
 enum class MemoryPriority { CRITICAL = 0, HIGH = 1, NORMAL = 2, LOW = 3 };
 enum class Residency      { DISK, CPU, GPU, CPU_AND_GPU };
@@ -20,10 +20,11 @@ enum class PressureLevel  { NORMAL, WARNING, HIGH, CRITICAL };
 
 inline const char* toString(MemoryLocation l) {
     switch (l) {
-        case MemoryLocation::CPU:  return "CPU";
-        case MemoryLocation::GPU:  return "GPU";
-        case MemoryLocation::DISK: return "DISK";
-        default:                   return "unknown";
+        case MemoryLocation::CPU:         return "CPU";
+        case MemoryLocation::GPU:         return "GPU";
+        case MemoryLocation::ACCELERATOR: return "ACCELERATOR";
+        case MemoryLocation::DISK:        return "DISK";
+        default:                          return "unknown";
     }
 }
 inline const char* toString(MemoryState s) {
