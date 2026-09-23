@@ -1,4 +1,4 @@
-# Adaptive GPU Runtime
+﻿# Adaptive GPU Runtime
 
 Universal Adaptive GPU Acceleration Runtime (HeteroAccel). A heterogeneous, hardware-aware local AI execution runtime that dynamically distributes AI computation across CPU and GPU.
 
@@ -8,15 +8,15 @@ Currently in **Phase 3**: Real LLM Inference via `llama.cpp` and Vulkan GPU offl
 
 ```
 User Application / CLI
-       │
+       â”‚
 HeteroAccel Runtime
-       │
+       â”‚
 llama.cpp Adapter (LlamaCppEngine)
-       │
+       â”‚
 llama.cpp (via FetchContent)
-       │
+       â”‚
 ggml_vulkan backend
-       │
+       â”‚
 Intel Iris Xe (or other Vulkan GPU)
 ```
 
@@ -119,3 +119,28 @@ ctest --test-dir build -C Release --output-on-failure
 .\build\Release\adaptive-gpu.exe hardware --json
 .\build\Release\adaptive-gpu.exe benchmark vulkan
 ```
+
+
+## Phase 4: Unified Memory Management
+
+Adds the `agr_mem` library — a cross-backend memory manager for CPU and Vulkan GPU memory.
+
+### Features
+- **CPUAllocator** — `std::malloc`-backed, with peak tracking
+- **VulkanAllocator** — reuses the existing `VulkanBackend`, queries heap sizes from `vkGetPhysicalDeviceMemoryProperties`
+- **TransferManager** — CPU↔GPU data movement with bandwidth telemetry
+- **MemoryPool** — free-list slab cache (4 MB default) for CPU and GPU blocks
+- **ResidencyManager** — tracks block location state per block ID
+- **PressureMonitor** — utilisation-based pressure levels (NORMAL/WARNING/HIGH/CRITICAL)
+- **EvictionPolicy** — LRU + priority scoring (CRITICAL never evicted)
+- **MemoryManager** — unified facade: `allocate()`, `release()`, `move()`, `statistics()`
+
+### CLI
+```bash
+adaptive-gpu memory     # Show memory manager stats + transfer telemetry
+```
+
+### Tests
+27/27 CTest tests pass (9 new Phase 4 tests + 18 existing Phase 1–3 tests).
+
+See [docs/phase4-memory.md](docs/phase4-memory.md) for full API docs.

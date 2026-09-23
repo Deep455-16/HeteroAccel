@@ -153,10 +153,26 @@ target_include_directories(agr_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_llm PUBLIC agr_core llama)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1, 2, 3)
+# agr_mem — Phase 4: Unified Memory Management
+# =============================================================================
+add_library(agr_mem STATIC
+    src/mem/CPUAllocator.cpp
+    src/mem/VulkanAllocator.cpp
+    src/mem/MemoryPool.cpp
+    src/mem/TransferManager.cpp
+    src/mem/ResidencyManager.cpp
+    src/mem/PressureMonitor.cpp
+    src/mem/EvictionPolicy.cpp
+    src/mem/MemoryManager.cpp
+)
+target_include_directories(agr_mem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_mem PUBLIC agr_core)
+
+# =============================================================================
+# adaptive-gpu — main CLI executable (Phase 1, 2, 3, 4)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
