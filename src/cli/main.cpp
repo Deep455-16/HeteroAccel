@@ -8,6 +8,8 @@
 #include "mem/MemoryManager.h"
 #include "backend/BackendManager.h"
 #include "backend/DeviceSelector.h"
+#include "scheduler/AdaptiveScheduler.h"
+#include "scheduler/CostModel.h"
 
 #include <algorithm>
 #include <chrono>
@@ -359,6 +361,7 @@ void printUsage() {
     std::cout << "  Set HETEROACCEL_MODEL_PATH env var as an alternative to --model.\n\n";
     std::cout << "  adaptive-gpu devices               Hardware discovery + auto backend selection\n";
     std::cout << "  adaptive-gpu memory                Unified Memory Manager stats\n";
+    std::cout << "  adaptive-gpu scheduler             Adaptive Heterogeneous Scheduler benchmark\n";
     std::cout << "  adaptive-gpu --help                Show this message\n";
 }
 
@@ -463,6 +466,68 @@ int runMemoryCommand() {
     return 0;
 }
 
+int runSchedulerCommand() {
+    std::cout << "HeteroAccel Scheduler Benchmark (Phase 5)\n";
+    std::cout << "=========================================\n\n";
+
+    agr::VulkanBackend vk;
+    agr::BackendManager backendMgr(vk);
+    backendMgr.discover();
+    agr::MemoryManager memMgr(vk);
+    agr::AdaptiveScheduler scheduler(backendMgr, memMgr);
+
+    agr::Workload w;
+    w.name = "Generic Compute Tensor";
+    w.input_bytes = 100 * 1024 * 1024; // 100 MB
+    w.output_bytes = 10 * 1024 * 1024; // 10 MB
+    w.compute_ops_estimate = 5000000;
+    
+    std::cout << "Workload: " << w.name << "\n";
+    std::cout << "Input:    " << (w.input_bytes / (1024.0*1024.0)) << " MB\n";
+    std::cout << "Output:   " << (w.output_bytes / (1024.0*1024.0)) << " MB\n";
+    std::cout << "Compute:  " << w.compute_ops_estimate << " ops\n\n";
+
+    w.cpu_execute = []() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(45));
+        return true;
+    };
+    w.vulkan_execute = []() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        return true;
+    };
+    w.cuda_execute = []() { return true; };
+
+    std::cout << "Candidate Devices\n";
+    std::cout << "-----------------\n";
+    
+    // Hacky instantiation to dump the cost model breakdown explicitly
+    agr::CostModel costModel(backendMgr, scheduler.history());
+    auto plan = costModel.evaluate(w);
+
+    const auto& devices = backendMgr.allDevices();
+    for (const auto& d : devices) {
+        if (!d.is_available) continue;
+        auto p = costModel.evaluateCandidate(w, d);
+        std::cout << agr::toString(d.backend) << "\n";
+        std::cout << "  Estimated compute: " << p.estimated_compute_ms << " ms\n";
+        std::cout << "  Transfer cost:     " << p.estimated_transfer_ms << " ms\n";
+        std::cout << "  Memory penalty:    " << p.estimated_queue_penalty_ms << " ms\n";
+        std::cout << "  Total estimate:    " << p.total_cost_ms << " ms\n\n";
+    }
+
+    std::cout << "Selected:\n  " << agr::toString(plan.selected_backend) << "\n\n";
+
+    agr::TaskHandle handle = scheduler.schedule(w);
+    agr::TaskResult result = scheduler.wait(handle);
+
+    std::cout << "Actual execution:\n";
+    std::cout << "  Status:  " << (result.success ? "SUCCESS" : "FAILED") << "\n";
+    std::cout << "  Compute: " << result.compute_ms << " ms\n";
+    std::cout << "  Total:   " << result.total_ms << " ms\n";
+
+    return result.success ? 0 : 1;
+}
+
 } // namespace
 
 // =============================================================================
@@ -513,6 +578,10 @@ int main(int argc, char** argv) {
 
     if (args[0] == "devices") {
         return runDevicesCommand();
+    }
+
+    if (args[0] == "scheduler") {
+        return runSchedulerCommand();
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";
