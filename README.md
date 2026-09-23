@@ -85,13 +85,13 @@ The runtime handles the rest: hardware detection, capability analysis, memory ma
 ## Build
 
 `powershell
-# Configure
+## Configure
 cmake -S . -B build -A x64
 
-# Build Release
+## Build Release
 cmake --build build --config Release -j 4
 
-# Run all tests
+## Run all tests
 ctest --test-dir build -C Release --output-on-failure
 `
 
@@ -103,19 +103,19 @@ ctest --test-dir build -C Release --output-on-failure
 ## CLI Commands
 
 `powershell
-# Adaptive Scheduler diagnostic/benchmark (Phase 5)
+## Adaptive Scheduler diagnostic/benchmark (Phase 5)
 .\build\Release\adaptive-gpu.exe scheduler
 
-# Hardware discovery + capability scores
+## Hardware discovery + capability scores
 .\build\Release\adaptive-gpu.exe devices
 
-# Memory manager stats
+## Memory manager stats
 .\build\Release\adaptive-gpu.exe memory
 
-# Vulkan vector-add benchmark
+## Vulkan vector-add benchmark
 .\build\Release\adaptive-gpu.exe benchmark vulkan
 
-# LLM inference
+## LLM inference
 .\build\Release\adaptive-gpu.exe llm --model C:\models\Qwen.gguf --prompt "What is Vulkan?"
 `
 
