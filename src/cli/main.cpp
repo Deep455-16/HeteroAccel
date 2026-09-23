@@ -5,6 +5,7 @@
 #include "llm/LlamaCppEngine.h"
 #include "llm/LlmConfig.h"
 #include "llm/LlmResult.h"
+#include "mem/MemoryManager.h"
 
 #include <algorithm>
 #include <chrono>
@@ -354,7 +355,61 @@ void printUsage() {
     std::cout << "    --gpu-layers <N>    GPU layers for Vulkan run (default: 99)\n";
     std::cout << "    --max-tokens <N>    Token limit (default: 64)\n\n";
     std::cout << "  Set HETEROACCEL_MODEL_PATH env var as an alternative to --model.\n\n";
+    std::cout << "  adaptive-gpu memory                Show Phase 4 Unified Memory Manager stats\n\n";
     std::cout << "  adaptive-gpu --help                Show this message\n";
+}
+
+int runMemoryCommand() {
+    std::cout << "HeteroAccel Memory Manager\n";
+    std::cout << "===========================\n\n";
+    
+    agr::VulkanBackend backend;
+    backend.initialize(); // best effort
+    
+    agr::MemoryManager mm(backend);
+    
+    // Do a small test allocation and transfer to populate some stats
+    agr::MemoryBlock bCpu = mm.allocate(16 * 1024 * 1024, agr::MemoryLocation::CPU);
+    agr::MemoryBlock bGpu = mm.allocate(8 * 1024 * 1024, agr::MemoryLocation::GPU);
+    bool r1 = mm.move(bGpu, agr::MemoryLocation::CPU); // GPU -> CPU  (download)
+    bool r2 = mm.move(bCpu, agr::MemoryLocation::GPU); // CPU -> GPU  (upload)
+
+    if (!r1) std::cout << "Note: download failed — Vulkan unavailable or unsupported.\n";
+    if (!r2) std::cout << "Note: upload failed  — Vulkan unavailable or unsupported.\n";
+    
+    agr::MemoryStats stats = mm.statistics();
+    
+    auto gb = [](size_t bytes) { return static_cast<double>(bytes) / (1024.0*1024.0*1024.0); };
+    auto mb = [](size_t bytes) { return static_cast<double>(bytes) / (1024.0*1024.0); };
+    
+    std::cout << "CPU Memory\n";
+    std::cout << "  Total:       " << gb(stats.cpu_total_bytes) << " GB\n";
+    std::cout << "  Used:         " << gb(stats.cpu_used_bytes) << " GB\n";
+    std::cout << "  Available:    " << gb(stats.cpu_total_bytes - stats.cpu_used_bytes) << " GB\n\n";
+    
+    std::cout << "Vulkan Memory\n";
+    std::cout << "  Device Local: " << gb(stats.gpu_device_local_bytes) << " GB\n";
+    std::cout << "  Used:          " << gb(stats.gpu_used_bytes) << " GB\n\n";
+    
+    std::cout << "Allocations:     " << stats.allocation_count << "\n";
+    std::cout << "Transfers:       " << stats.transfer_count << "\n\n";
+    
+    std::cout << "Upload:\n";
+    std::cout << "  Bytes:         " << mb(stats.bytes_uploaded) << " MB\n";
+    std::cout << "  Bandwidth:     " << stats.upload_bandwidth_gbps << " GB/s\n\n";
+    
+    std::cout << "Download:\n";
+    std::cout << "  Bytes:         " << mb(stats.bytes_downloaded) << " MB\n";
+    std::cout << "  Bandwidth:     " << stats.download_bandwidth_gbps << " GB/s\n\n";
+    
+    std::cout << "Pressure:\n";
+    std::cout << "  " << agr::toString(stats.cpu_pressure) << "\n";
+    
+    // cleanup
+    mm.release(bCpu);
+    mm.release(bGpu);
+    
+    return 0;
 }
 
 } // namespace
@@ -399,6 +454,10 @@ int main(int argc, char** argv) {
     if (args[0] == "llm") {
         std::vector<std::string> rest(args.begin() + 1, args.end());
         return runLlmInference(rest);
+    }
+    
+    if (args[0] == "memory") {
+        return runMemoryCommand();
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";

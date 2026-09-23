@@ -28,6 +28,10 @@ public:
     std::string deviceName() const override { return deviceName_; }
     std::string lastError() const override { return lastError_; }
 
+    // Phase 4: expose the physical device so VulkanAllocator can query
+    // memory heap sizes without creating a second Vulkan instance/device.
+    VkPhysicalDevice physicalDevice() const { return physicalDevice_; }
+
     Buffer createBuffer(size_t sizeBytes) override;
     void destroyBuffer(Buffer& buffer) override;
 
