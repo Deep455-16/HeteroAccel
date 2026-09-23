@@ -1,264 +1,164 @@
 ﻿# HeteroAccel
 
-> **Hardware-adaptive heterogeneous compute runtime that automatically selects CPU, Vulkan, or CUDA. The user never chooses a backend.**
+> **Hardware-adaptive heterogeneous compute runtime that automatically selects CPU, Vulkan, or CUDA based on runtime conditions, telemetry, and capabilities.**
 
-HeteroAccel inspects the host machine at startup, discovers all available compute backends (CPU, Vulkan GPU, CUDA), scores them against workload requirements, and selects the best execution path automatically.
+HeteroAccel inspects the host machine at startup, discovers all available compute backends, scores them against workload requirements using an adaptive cost model, and dynamically schedules the best execution path.
 
-```cpp
+`cpp
 // What the user writes:
-runtime.execute(task);
+agr::TaskHandle handle = scheduler.schedule(workload);
+agr::TaskResult result = scheduler.wait(handle);
+`
 
-// What HeteroAccel decides internally (Intel Iris Xe machine):
-//  CPU     detected : 12th Gen Intel Core i5-1235U  score=120
-//  Vulkan  detected : Intel Iris Xe Graphics         score=379  <- selected
-//  CUDA    absent   : no NVIDIA driver               score=0
-//
-//  Primary: Vulkan  |  Fallback: CPU
-```
-
-Backends are implementation details. The runtime decides.
+The runtime handles the rest: hardware detection, capability analysis, memory management, transfer telemetry, and adaptive feedback.
 
 ---
 
 ## Architecture
 
-```
+`
                          HeteroAccel
                               |
                     Hardware Discovery
                               |
-                    Capability Analysis
-                              |
                     BackendManager
                               |
               +---------------+---------------+
-              |               |               |
-              v               v               v
-             CPU           Vulkan           CUDA
-              |               |               |
-              +---------------+---------------+
-                              |
-                    DeviceSelector (scoring model)
-                              |
-                    MemoryManager (unified alloc)
-                              |
-                    Workload Execution
-```
+              |                               |
+        MemoryManager                  AdaptiveScheduler
+              |                               |
+        Unified Alloc                 +-------+-------+
+       Transfers & Evict              |       |       |
+                              CostModel PerformanceHistory
+                                      |
+                              +-------+-------+
+                              |       |       |
+                            CPU    Vulkan   CUDA
+                           Worker  Worker  Worker
+                              \       |       /
+                               \      |      /
+                                +-----v-----+
+                                  Execution
+`
 
 ### Automatic Selection Flow
 
-```
-All Candidates
-      |
-  +---+---+
-  CPU  Vulkan  CUDA
-   |     |       |
-score  score   score
-   |     |       |
-  +---+---+-------+
-          |
-     Best Candidate
-      (or CPU fallback)
-```
-
-**On Intel Iris Xe (this machine):**
-```
-CPU     available  score ~120
-Vulkan  available  score ~379  <- winner
-CUDA    absent     score   0
-```
-
-**On NVIDIA RTX system:**
-```
-CPU     available  score ~120
-Vulkan  available  score ~379
-CUDA    available  score ~550  <- winner
-```
-
----
-
-## Design Principle
-
-> HeteroAccel automatically detects the host CPU and available accelerator backends,
-> evaluates their capabilities using a scoring model, and selects an appropriate
-> execution path. **CUDA and Vulkan are backend implementations hidden behind the
-> hardware-adaptive runtime layer.**
->
-> The long-term goal:
-> `Any supported hardware → detection → capability analysis → auto selection → heterogeneous scheduling → maximum local performance`
-
-**The user never writes:**
-```cpp
-if (cudaAvailable)   useCUDA();
-else if (vulkan)     useVulkan();
-```
-That logic lives inside HeteroAccel.
+1. **Workload Definition:** Defines input/output memory, operation scale, and backend-specific execution callbacks.
+2. **Cost Evaluation:** CostModel evaluates feasible backends, factoring in:
+   - Compute capability
+   - Available memory
+   - Required data transfers (residency bias)
+   - Queue penalties (crude load representation)
+3. **Execution:** The AdaptiveScheduler submits the workload to the winning backend's asynchronous IWorker.
+4. **Adaptive Feedback:** Upon completion, the PerformanceHistory uses Exponential Moving Average (EMA) to update its internal ops/sec and bandwidth models, making future scheduling smarter.
 
 ---
 
 ## Phases
 
 ### Phase 1 — Hardware Detection ✅
-- CPU: vendor, model, physical/logical cores, ISA features
-- RAM: total and available physical memory
-- GPU: integrated/dedicated classification
-- Vulkan: loader, devices, compute queues, memory heaps
-- CUDA: runtime driver discovery via dynamic load — graceful, never crashes
+- CPU, RAM, Vulkan, CUDA detection.
+- Graceful, crash-free CUDA discovery via dynamic load.
 
 ### Phase 2 — Vulkan Compute Backend ✅
-- Native Vulkan vector-add compute pipeline
-- Buffer management for unified (Iris Xe) and discrete GPU memory
-- GLSL → SPIR-V shader compilation
-- CPU vs GPU benchmark
+- Native Vulkan vector-add compute pipeline.
+- Buffer management and descriptor pool reuse.
 
 ### Phase 3 — LLM Inference via llama.cpp ✅
-- `llama.cpp` integrated via CMake FetchContent (static, Vulkan-enabled)
-- CPU-only and Vulkan GPU-offloaded inference modes
-- Automatic Vulkan detection from llama.cpp logs
-- Honest telemetry: tokens/sec, load time, GPU layers offloaded
-- Validated: Qwen2.5-0.5B Q4_K_M — 25/25 layers to Intel Iris Xe via Vulkan
+- Integrated llama.cpp (static, Vulkan-enabled).
+- Automatic Vulkan detection from logs.
 
-### Phase 4 — Unified Memory + Automatic Backend Selection ✅
+### Phase 4 — Unified Memory + Backend Discovery ✅
+- Unified MemoryManager with CPUAllocator, VulkanAllocator, CUDAAllocator.
+- Free-list slab cache, LRU eviction, utilisation-based pressure monitoring.
+- BackendManager unifies CPU, Vulkan, CUDA into ComputeDevice models.
 
-#### Memory Infrastructure (`agr_mem`)
-| Component | Role |
-|---|---|
-| `CPUAllocator` | `std::malloc` with peak tracking |
-| `VulkanAllocator` | Reuses `VulkanBackend`, queries Vulkan heap sizes |
-| `CUDAAllocator` | Graceful stub; real cudaMalloc in Phase 5 |
-| `TransferManager` | CPU↔GPU data movement + bandwidth telemetry |
-| `MemoryPool` | Free-list slab cache for block reuse |
-| `ResidencyManager` | Per-block location state tracking |
-| `PressureMonitor` | Utilisation-based pressure (NORMAL/WARNING/HIGH/CRITICAL) |
-| `EvictionPolicy` | LRU + priority scoring (CRITICAL never evicted) |
-| `MemoryManager` | Unified facade: `allocate()`, `release()`, `move()`, `statistics()` |
-
-`MemoryLocation::ACCELERATOR` lets HeteroAccel pick the right accelerator automatically.
-
-#### Automatic Backend Selection (`agr_backend`)
-| Component | Role |
-|---|---|
-| `ComputeDevice` | Hardware-independent device descriptor (CPU / Vulkan / CUDA) |
-| `BackendManager` | Discovers all backends at startup |
-| `DeviceSelector` | Scoring model → automatic selection; CPU always the fallback |
+### Phase 5 — Adaptive Heterogeneous Scheduler ✅
+- Workload abstraction supporting generic, asynchronous backend callbacks.
+- CostModel that evaluates residency penalties and capacity limits.
+- PerformanceHistory providing EMA-smoothed telemetry for ops/sec and bandwidth.
+- Asynchronous execution workers (CPUWorker, VulkanWorker, CUDAWorker).
+- AdaptiveScheduler orchestrates the flow and guarantees safe fallbacks.
 
 ---
 
 ## Build
 
-```powershell
-# Configure (downloads llama.cpp ~2 GB, takes a few minutes)
+`powershell
+# Configure
 cmake -S . -B build -A x64
 
-# Build Release (5-15 minutes first time)
+# Build Release
 cmake --build build --config Release -j 4
 
 # Run all tests
 ctest --test-dir build -C Release --output-on-failure
-```
+`
 
 **Requirements:** MSVC / VS BuildTools 2022+, CMake ≥ 3.20, Vulkan SDK 1.3+
-
-CUDA is **optional** — builds and runs perfectly without NVIDIA hardware.
+*(CUDA is optional and gracefully bypassed if unavailable)*
 
 ---
 
 ## CLI Commands
 
-```powershell
-# Hardware discovery + automatic backend selection
+`powershell
+# Adaptive Scheduler diagnostic/benchmark (Phase 5)
+.\build\Release\adaptive-gpu.exe scheduler
+
+# Hardware discovery + capability scores
 .\build\Release\adaptive-gpu.exe devices
 
-# Full hardware info (JSON)
-.\build\Release\adaptive-gpu.exe hardware
-.\build\Release\adaptive-gpu.exe hardware --json
+# Memory manager stats
+.\build\Release\adaptive-gpu.exe memory
 
 # Vulkan vector-add benchmark
 .\build\Release\adaptive-gpu.exe benchmark vulkan
 
-# LLM inference (auto GPU offload)
+# LLM inference
 .\build\Release\adaptive-gpu.exe llm --model C:\models\Qwen.gguf --prompt "What is Vulkan?"
+`
 
-# LLM CPU-only
-.\build\Release\adaptive-gpu.exe llm --model C:\models\Qwen.gguf --cpu
+### scheduler output — Intel Iris Xe machine
 
-# LLM CPU vs Vulkan benchmark
-.\build\Release\adaptive-gpu.exe benchmark llm --model C:\models\Qwen.gguf
+`
+HeteroAccel Scheduler Benchmark (Phase 5)
+=========================================
 
-# Memory manager stats
-.\build\Release\adaptive-gpu.exe memory
-```
+Workload: Generic Compute Tensor
+Input:    100 MB
+Output:   10 MB
+Compute:  5000000 ops
 
-### `devices` output — Intel Iris Xe machine
-
-```
-HeteroAccel Hardware Configuration
-===================================
-
+Candidate Devices
+-----------------
 Vulkan
-  Name:    Intel(R) Iris(R) Xe Graphics
-  API:     1.3
-  Memory:  7.87 GB
-  Status:  AVAILABLE
-  Score:   378.655
+  Estimated compute: 2000 ms
+  Transfer cost:     0 ms
+  Memory penalty:    10 ms
+  Total estimate:    2010 ms
 
 CPU
-  Name:    12th Gen Intel(R) Core(TM) i5-1235U
-  Vendor:  GenuineIntel
-  Memory:  15.73 GB
-  Cores:   10
-  Status:  AVAILABLE
-  Score:   120
+  Estimated compute: 10000 ms
+  Transfer cost:     0 ms
+  Memory penalty:    2 ms
+  Total estimate:    15003 ms
 
-CUDA
-  Name:    CUDA
-  Status:  UNAVAILABLE
-  Reason:  CUDA driver library not found -- no NVIDIA driver installed
-  Score:   0
+Selected:
+  Vulkan
 
-Backend Decision (automatic)
-  Primary Accelerator: Vulkan (Intel(R) Iris(R) Xe Graphics)
-  CPU Fallback:        ENABLED
-
-HeteroAccel selects backends automatically.
-CUDA and Vulkan are implementation details hidden from the caller.
-```
+Actual execution:
+  Status:  SUCCESS
+  Compute: 16.9342 ms
+  Total:   16.9342 ms
+`
 
 ---
 
 ## Tests
 
-**33/33 CTest tests pass** (3 skipped — LLM tests need `HETEROACCEL_MODEL_PATH`).
-
-| Group | Tests | Coverage |
-|---|---|---|
-| Phase 1: Hardware | 6 | CPU, RAM, GPU, Vulkan, CUDA, JSON |
-| Phase 2: Vulkan compute | 6 | lifecycle, vector-add, buffers, descriptor reuse |
-| Phase 2: CPU reference | 2 | vector-add, benchmark formatting |
-| Phase 3: LLM | 5 | availability, model path, CPU infer, Vulkan infer, mode |
-| Phase 4: Memory | 9 | CPU alloc, Vulkan alloc, transfers, pool, LRU, eviction |
-| Phase 4: Backend selection | 6 | CPU detect, Vulkan detect, CUDA graceful, enum, auto-select, fallback |
-
-Run LLM tests with a model:
-```powershell
-$env:HETEROACCEL_MODEL_PATH = "C:\models\Qwen.gguf"
-ctest --test-dir build -C Release --output-on-failure
-```
-
----
-
-## Hardware Tested
-
-| Component | Detail |
-|---|---|
-| CPU | Intel Core i5-1235U (10 cores) |
-| GPU | Intel Iris Xe (integrated, unified memory) |
-| RAM | ~16 GB |
-| Vulkan | SDK 1.4.357 — available |
-| CUDA | unavailable (no NVIDIA hardware) |
-| OS | Windows 11 |
-| Compiler | MSVC 19.50 / VS BuildTools |
-| CMake | 4.3.3 |
+**39/39 CTest tests pass** (3 skipped if HETEROACCEL_MODEL_PATH is missing).
+Tests cover hardware detection, Vulkan execution, memory pooling/eviction, backend selection, cost modelling, residency bias, OOM rejection, feedback loop updates, and graceful failure fallbacks.
 
 ---
 
@@ -269,10 +169,7 @@ ctest --test-dir build -C Release --output-on-failure
 | 1 | ✅ | Hardware detection (CPU, RAM, Vulkan, CUDA) |
 | 2 | ✅ | Vulkan compute backend |
 | 3 | ✅ | LLM inference (llama.cpp + Vulkan) |
-| 4 | ✅ | Unified memory + automatic backend selection |
-| 5 | planned | Dynamic heterogeneous scheduling |
-| 6 | planned | Layer/model placement, prefetch, streaming |
+| 4 | ✅ | Unified memory + backend capability discovery |
+| 5 | ✅ | Adaptive Heterogeneous Scheduler (Cost Models, Telemetry, Async Workers) |
+| 6 | planned | Layer/model placement, prefetch, streaming, MoE routing |
 
----
-
-See [docs/phase4-memory.md](docs/phase4-memory.md) for the full memory subsystem API.
