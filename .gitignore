@@ -59,3 +59,7 @@ secrets.*
 .idea/
 *.swp
 *~
+
+*.zip
+VulkanSDK.exe
+*.txt

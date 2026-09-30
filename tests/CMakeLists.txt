@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -71,3 +71,9 @@ agr_add_test(test_sched_oom_rejection test_sched_oom_rejection.cpp)
 agr_add_test(test_sched_residency_bias test_sched_residency_bias.cpp)
 agr_add_test(test_sched_feedback_loop test_sched_feedback_loop.cpp)
 agr_add_test(test_sched_fallback test_sched_fallback.cpp)
+
+# Phase 6 - Model / Layer Manager & Prefetch
+agr_add_test(test_model_manager test_model_manager.cpp)
+agr_add_test(test_layer_dependencies test_layer_dependencies.cpp)
+agr_add_test(test_residency_transitions test_residency_transitions.cpp)
+agr_add_test(test_prefetch_engine test_prefetch_engine.cpp)

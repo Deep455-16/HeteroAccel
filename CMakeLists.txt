@@ -196,10 +196,24 @@ target_include_directories(agr_scheduler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_scheduler PUBLIC agr_core agr_mem agr_backend)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1, 2, 3, 4, 5)
+# agr_model — Phase 6: Model / Layer Manager, Streaming & Prefetch
+# =============================================================================
+add_library(agr_model STATIC
+    src/model/FileStorageBackend.cpp
+    src/model/ResourceResidencyManager.cpp
+    src/model/StreamingEngine.cpp
+    src/model/LayerManager.cpp
+    src/model/PrefetchEngine.cpp
+    src/model/ModelManager.cpp
+)
+target_include_directories(agr_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_model PUBLIC agr_scheduler agr_mem agr_backend)
+
+# =============================================================================
+# adaptive-gpu — main CLI executable (Phase 1..6)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler agr_model)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
