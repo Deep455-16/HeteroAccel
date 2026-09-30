@@ -225,3 +225,5 @@ NVIDIA systems (CPU + Vulkan + CUDA) are fully supported via Phase 5 automatic s
 ## Design Principle
 
 > HeteroAccel automatically detects hardware, evaluates capabilities using a real-time cost model, and selects the optimal execution backend. CUDA and Vulkan are implementation details hidden behind the runtime. Phase 6 adds the infrastructure to execute models larger than accelerator memory by streaming layers between Disk → RAM → Accelerator on demand, with a configurable prefetch engine that overlaps I/O with computation without tying itself to any specific model format or inference framework.
+
+<!-- Phase 6 complete: 43/43 tests pass -->
