@@ -1,5 +1,5 @@
 # HeteroAccel
-
+ 
 > **Hardware-adaptive heterogeneous compute runtime that automatically selects CPU, Vulkan, or CUDA based on runtime conditions, telemetry, and capabilities. Includes full model/layer streaming and prefetch infrastructure for running models larger than accelerator memory.**
 
 HeteroAccel inspects the host machine at startup, discovers all available compute backends, scores them against workload requirements using an adaptive cost model, and dynamically schedules the best execution path — while streaming model layers between Disk → RAM → Accelerator on demand.
