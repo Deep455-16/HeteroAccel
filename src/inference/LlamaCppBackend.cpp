@@ -134,6 +134,7 @@ bool LlamaCppBackend::createContext(const GenerationOptions& opts) {
     config_.max_new_tokens = opts.max_tokens;
     config_.temperature   = opts.temperature;
     config_.seed          = opts.seed;
+    config_.n_threads     = opts.n_threads;
 
     // Engine manages context internally; no separate createContext call in
     // LlamaCppEngine — context is created during initialize(). If we need to

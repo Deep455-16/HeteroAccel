@@ -181,8 +181,16 @@ target_include_directories(agr_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_backend PUBLIC agr_core agr_mem)
 
 # =============================================================================
-# agr_scheduler — Phase 5: Adaptive Heterogeneous Scheduler
-# Decides where and when to execute workloads based on cost models and telemetry.
+# agr_profiler — Phase 8: Unified Profiling System
+# =============================================================================
+add_library(agr_profiler STATIC
+    src/profiler/Profiler.cpp
+)
+target_include_directories(agr_profiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_profiler PUBLIC agr_core agr_scheduler)
+
+# =============================================================================
+# agr_scheduler — Phase 5 + 8: Adaptive Scheduler & Auto-Tuning
 # =============================================================================
 add_library(agr_scheduler STATIC
     src/scheduler/PerformanceHistory.cpp
@@ -191,6 +199,7 @@ add_library(agr_scheduler STATIC
     src/scheduler/VulkanWorker.cpp
     src/scheduler/CUDAWorker.cpp
     src/scheduler/AdaptiveScheduler.cpp
+    src/scheduler/AutoTuner.cpp
 )
 target_include_directories(agr_scheduler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_scheduler PUBLIC agr_core agr_mem agr_backend)
@@ -217,13 +226,13 @@ add_library(agr_inference STATIC
     src/inference/HeteroRuntime.cpp
 )
 target_include_directories(agr_inference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(agr_inference PUBLIC agr_model agr_llm agr_scheduler agr_mem agr_backend agr_core llama)
+target_link_libraries(agr_inference PUBLIC agr_model agr_llm agr_scheduler agr_mem agr_backend agr_core llama agr_profiler)
 
 # =============================================================================
 # adaptive-gpu — main CLI executable (Phase 1..7)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler agr_model agr_inference)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution

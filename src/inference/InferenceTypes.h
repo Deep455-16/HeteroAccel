@@ -17,6 +17,7 @@ struct GenerationOptions {
     uint32_t seed        = 42;
     int      n_ctx       = 2048;
     int      n_batch     = 512;
+    int      n_threads   = 4;
 };
 
 /// Lifecycle state of a loaded model.

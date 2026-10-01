@@ -1,0 +1,26 @@
+#version 450
+
+// C[i] = A[i] + B[i]
+//
+// Real Phase-2 validation workload. Deliberately simple so correctness
+// is trivial to check against a CPU reference, and so wall-clock timing
+// is dominated by transfer/dispatch overhead rather than shader logic --
+// which is exactly the honest signal Phase 2 needs to expose.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer BufA  { float a[]; };
+layout(set = 0, binding = 1) readonly buffer BufB  { float b[]; };
+layout(set = 0, binding = 2) writeonly buffer BufC { float c[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint element_count;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.element_count) {
+        return;
+    }
+    c[idx] = a[idx] + b[idx];
+}

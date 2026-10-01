@@ -19,6 +19,7 @@ struct LlmConfig {
     int      max_new_tokens = 256;    // Maximum tokens to generate
     float    temperature    = 0.7f;   // Sampling temperature
     uint32_t seed           = 42;     // RNG seed for reproducibility
+    int      n_threads      = 0;      // 0 = auto-select
 
     // Helpers
     int effective_gpu_layers() const {

@@ -1,4 +1,4 @@
-﻿// src/scheduler/AdaptiveScheduler.h
+// src/scheduler/AdaptiveScheduler.h
 // The orchestrator of Phase 5.
 #pragma once
 
@@ -34,6 +34,7 @@ public:
     /// Allows bypassing the cost model for testing or manual overrides.
     TaskHandle scheduleToBackend(Workload workload, ComputeBackend backend);
     
+    PerformanceHistory& history() { return history_; }
     const PerformanceHistory& history() const { return history_; }
 
 private:

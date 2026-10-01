@@ -37,31 +37,30 @@ bool HeteroRuntime::initialize() {
     // Phase 5: Adaptive Scheduler
     scheduler_ = std::make_unique<AdaptiveScheduler>(*backendMgr_, *memMgr_);
 
+    // Phase 8: Profiling and Auto-Tuning
+    profiler_ = std::make_unique<Profiler>(scheduler_->history(), hardware_);
+    autoTuner_ = std::make_unique<AutoTuner>(scheduler_->history(), hardware_);
+
+    // Try loading persistent profile
+    profiler_->loadProfile("profiles/performance.json");
+
     initialized_ = true;
     return true;
 }
 
 // ---------------------------------------------------------------------------
 void HeteroRuntime::resolveBackendConfig(int& out_gpu_layers, bool& out_cpu_only) const {
-    // Ask Phase 5 scheduler for the best backend.
-    // We represent inference as a generic Workload with memory requirements.
+    // Legacy Phase 7 logic — we keep this signature but AutoTuner handles tuning.
     out_gpu_layers = 0;
     out_cpu_only   = true;
-
     if (!backendMgr_) return;
-
     bool vulkan_avail = backendMgr_->isBackendAvailable(ComputeBackend::VULKAN);
     bool cuda_avail   = backendMgr_->isBackendAvailable(ComputeBackend::CUDA);
-
-    // Check memory availability to decide if GPU offload is safe.
-    // We use the Phase 4 memory stats.
     MemoryStats memStats;
     if (memMgr_) memStats = memMgr_->statistics();
-
     bool gpu_memory_ok = (memStats.gpu_pressure != PressureLevel::CRITICAL);
-
     if ((cuda_avail || vulkan_avail) && gpu_memory_ok) {
-        out_gpu_layers = 99; // offload as many layers as fit — llama.cpp decides
+        out_gpu_layers = 99; 
         out_cpu_only   = false;
     } else {
         out_gpu_layers = 0;
@@ -74,17 +73,26 @@ bool HeteroRuntime::loadModel(const std::string& model_path,
                                const GenerationOptions& opts) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (!initialized_) return false;
-
-    // If already loaded, skip
     if (backends_.count(model_path)) return true;
 
-    int  n_gpu_layers;
-    bool cpu_only;
-    resolveBackendConfig(n_gpu_layers, cpu_only);
+    int max_threads = std::thread::hardware_concurrency();
+    int gpu_layers = 0;
+    bool cpu_only = true;
+    resolveBackendConfig(gpu_layers, cpu_only);
+
+    ProfileKey key;
+    key.hardware_id = hardware_.cpu.model_name;
+    key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
+    key.workload_type = "llm-inference";
+    key.model_name = model_path;
+
+    TuningConfig tcfg = autoTuner_->suggestConfiguration(key, !cpu_only, max_threads);
+    GenerationOptions tunedOpts = opts;
+    tunedOpts.n_threads = tcfg.n_threads;
 
     auto backend = std::make_unique<LlamaCppBackend>();
-    if (!backend->loadModel(model_path, n_gpu_layers, cpu_only)) return false;
-    if (!backend->createContext(opts)) return false;
+    if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) return false;
+    if (!backend->createContext(tunedOpts)) return false;
 
     backends_[model_path] = std::move(backend);
     return true;
@@ -98,27 +106,31 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
     std::lock_guard<std::mutex> lk(mutex_);
     InferenceResult res;
 
-    if (!initialized_) {
-        res.error = "HeteroRuntime not initialized";
-        return res;
-    }
-    if (prompt.empty()) {
-        res.error = "Prompt is empty";
-        return res;
-    }
+    if (!initialized_) { res.error = "HeteroRuntime not initialized"; return res; }
+    if (prompt.empty()) { res.error = "Prompt is empty"; return res; }
 
-    // Auto-load if not yet loaded
+    int max_threads = std::thread::hardware_concurrency();
+    int base_gpu_layers = 0;
+    bool cpu_only = true;
+    resolveBackendConfig(base_gpu_layers, cpu_only);
+
+    ProfileKey key;
+    key.hardware_id = hardware_.cpu.model_name;
+    key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
+    key.workload_type = "llm-inference";
+    key.model_name = model_path;
+
+    TuningConfig tcfg = autoTuner_->suggestConfiguration(key, !cpu_only, max_threads);
+    GenerationOptions tunedOpts = opts;
+    tunedOpts.n_threads = tcfg.n_threads;
+
     if (!backends_.count(model_path)) {
-        int  n_gpu_layers;
-        bool cpu_only;
-        resolveBackendConfig(n_gpu_layers, cpu_only);
-
         auto backend = std::make_unique<LlamaCppBackend>();
-        if (!backend->loadModel(model_path, n_gpu_layers, cpu_only)) {
+        if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) {
             res.error = "Failed to load model: " + backend->lastError();
             return res;
         }
-        if (!backend->createContext(opts)) {
+        if (!backend->createContext(tunedOpts)) {
             res.error = "Failed to create context: " + backend->lastError();
             return res;
         }
@@ -127,51 +139,44 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
 
     IInferenceBackend* backend = backends_.at(model_path).get();
 
-    // Build inference request
     InferenceRequest req;
     req.prompt  = prompt;
-    req.options = opts;
+    req.options = tunedOpts;
     req.prefer_gpu = !backend->modelInfo().architecture.empty();
 
-    // Determine backend info for scheduler annotation
-    bool vulkan_avail = backendMgr_->isBackendAvailable(ComputeBackend::VULKAN);
-    bool cuda_avail   = backendMgr_->isBackendAvailable(ComputeBackend::CUDA);
-
-    // Run inference
     double t0 = nowMs();
-    if (cb) {
-        res = backend->generateStreaming(req, cb);
-    } else {
-        res = backend->generate(req);
-    }
+    if (cb) res = backend->generateStreaming(req, cb);
+    else    res = backend->generate(req);
     double wall_ms = nowMs() - t0;
 
-    // Annotate scheduler decision in telemetry
-    if (cuda_avail) {
-        res.telemetry.scheduler_reason = "CUDA available → offloaded";
-    } else if (vulkan_avail) {
-        res.telemetry.scheduler_reason = "Vulkan available → offloaded";
-    } else {
-        res.telemetry.scheduler_reason = "CPU-only (no GPU available)";
-    }
+    res.telemetry.scheduler_reason = "Tuned: layers=" + std::to_string(tcfg.n_gpu_layers) +
+                                     " threads=" + std::to_string(tcfg.n_threads);
 
-    // Feed result back into Phase 5 PerformanceHistory
-    if (scheduler_ && res.success) {
-        Workload w;
-        w.name = "llm-inference";
-        w.compute_ops_estimate = static_cast<size_t>(res.telemetry.output_tokens) * 1000;
-        // We submit a dummy CPU task to record timing in PerformanceHistory
-        w.cpu_execute = [&]() -> bool { return true; };
-        // Don't block — just record directly via a completed TaskResult
-        TaskResult tr;
-        tr.success    = true;
-        tr.status     = TaskStatus::COMPLETED;
-        tr.compute_ms = res.telemetry.generation_ms;
-        tr.total_ms   = wall_ms;
-        // PerformanceHistory doesn't have a direct record() API yet;
-        // this will be wired in Phase 8. For Phase 7 we document this
-        // as a known limitation: scheduler feedback loop is partially wired.
-    }
+    // Phase 8: Record telemetry event
+    ProfileEvent event;
+    event.workload_type = key.workload_type;
+    event.model_name = key.model_name;
+    event.backend = key.backend;
+    event.device_name = res.telemetry.device_name;
+    event.start_timestamp_ms = t0;
+    event.end_timestamp_ms = t0 + wall_ms;
+    event.execution_duration_ms = wall_ms;
+    event.prompt_processing_ms = res.telemetry.prompt_eval_ms;
+    event.generation_ms = res.telemetry.generation_ms;
+    event.ttft_ms = res.telemetry.ttft_ms;
+    event.input_tokens = res.telemetry.prompt_tokens;
+    event.output_tokens = res.telemetry.output_tokens;
+    event.tokens_per_sec = res.telemetry.tokens_per_sec;
+    event.scheduler_gpu_layers = tcfg.n_gpu_layers;
+    event.scheduler_threads = tcfg.n_threads;
+    event.predicted_cost_ms = scheduler_->history().predictDurationMs(key);
+    event.actual_cost_ms = wall_ms;
+    event.success = res.success;
+    event.error_message = res.error;
+    
+    profiler_->recordEvent(event);
+    autoTuner_->recordResult(key, tcfg, wall_ms, res.success);
+    profiler_->saveProfile("profiles/performance.json");
 
     return res;
 }

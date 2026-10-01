@@ -83,3 +83,8 @@ agr_add_test(test_inference_backend_init test_inference_backend_init.cpp)
 agr_add_test(test_inference_runtime_init test_inference_runtime_init.cpp)
 agr_add_test(test_inference_invalid_model test_inference_invalid_model.cpp)
 agr_add_test(test_inference_model_info test_inference_model_info.cpp)
+
+# Phase 8 - Profiling & Auto-Tuning
+agr_add_test(test_performance_history test_performance_history.cpp)
+agr_add_test(test_auto_tuner test_auto_tuner.cpp)
+agr_add_test(test_profiler_persistence test_profiler_persistence.cpp)

@@ -142,10 +142,12 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx     = static_cast<uint32_t>(config_.n_ctx);
     cparams.n_batch   = static_cast<uint32_t>(config_.n_batch);
-    // Use up to half the available hardware threads for the CPU layers
-    // (leaves threads free for GPU driver and OS).
-    cparams.n_threads = static_cast<int32_t>(
-        std::max(1u, std::thread::hardware_concurrency() / 2));
+    if (config_.n_threads > 0) {
+        cparams.n_threads = static_cast<int32_t>(config_.n_threads);
+    } else {
+        cparams.n_threads = static_cast<int32_t>(
+            std::max(1u, std::thread::hardware_concurrency() / 2));
+    }
 
     ctx_ = llama_init_from_model(model_, cparams);
     if (!ctx_) {

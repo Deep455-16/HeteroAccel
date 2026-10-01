@@ -23,6 +23,8 @@
 #include "mem/MemoryManager.h"
 #include "scheduler/AdaptiveScheduler.h"
 #include "hardware/HardwareDetector.h"
+#include "profiler/Profiler.h"
+#include "scheduler/AutoTuner.h"
 
 #include <memory>
 #include <mutex>
@@ -95,6 +97,8 @@ private:
     std::unique_ptr<BackendManager>   backendMgr_;
     std::unique_ptr<MemoryManager>    memMgr_;
     std::unique_ptr<AdaptiveScheduler> scheduler_;
+    std::unique_ptr<Profiler>         profiler_;
+    std::unique_ptr<AutoTuner>        autoTuner_;
 
     // Loaded model backends, keyed by model path
     std::unordered_map<std::string, std::unique_ptr<IInferenceBackend>> backends_;
