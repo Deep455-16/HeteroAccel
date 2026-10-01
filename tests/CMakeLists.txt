@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_inference agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -77,3 +77,9 @@ agr_add_test(test_model_manager test_model_manager.cpp)
 agr_add_test(test_layer_dependencies test_layer_dependencies.cpp)
 agr_add_test(test_residency_transitions test_residency_transitions.cpp)
 agr_add_test(test_prefetch_engine test_prefetch_engine.cpp)
+
+# Phase 7 - Inference Backend & HeteroRuntime
+agr_add_test(test_inference_backend_init test_inference_backend_init.cpp)
+agr_add_test(test_inference_runtime_init test_inference_runtime_init.cpp)
+agr_add_test(test_inference_invalid_model test_inference_invalid_model.cpp)
+agr_add_test(test_inference_model_info test_inference_model_info.cpp)

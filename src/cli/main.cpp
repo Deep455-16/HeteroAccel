@@ -10,6 +10,7 @@
 #include "backend/DeviceSelector.h"
 #include "scheduler/AdaptiveScheduler.h"
 #include "scheduler/CostModel.h"
+#include "inference/HeteroRuntime.h"
 
 #include <algorithm>
 #include <chrono>
@@ -359,6 +360,9 @@ void printUsage() {
     std::cout << "    --gpu-layers <N>    GPU layers for Vulkan run (default: 99)\n";
     std::cout << "    --max-tokens <N>    Token limit (default: 64)\n\n";
     std::cout << "  Set HETEROACCEL_MODEL_PATH env var as an alternative to --model.\n\n";
+    std::cout << "Phase 7 commands:\n";
+    std::cout << "  adaptive-gpu run --model <path.gguf> --prompt \"...\" [opts]  Auto-scheduled inference\n";
+    std::cout << "  adaptive-gpu chat --model <path.gguf>                       Interactive auto-scheduled chat\n\n";
     std::cout << "  adaptive-gpu devices               Hardware discovery + auto backend selection\n";
     std::cout << "  adaptive-gpu memory                Unified Memory Manager stats\n";
     std::cout << "  adaptive-gpu scheduler             Adaptive Heterogeneous Scheduler benchmark\n";
@@ -528,6 +532,135 @@ int runSchedulerCommand() {
     return result.success ? 0 : 1;
 }
 
+// =============================================================================
+// Phase 7 — Auto-Scheduled Inference & Chat
+// =============================================================================
+int runInferenceCommand(const std::vector<std::string>& args) {
+    std::string model_path;
+    std::string prompt = "Explain virtual memory in simple terms.";
+    agr::GenerationOptions opts;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (parseStringArg(args, i, "--model",      model_path))  continue;
+        if (parseStringArg(args, i, "--prompt",     prompt))      continue;
+        if (parseIntArg(args, i,    "--max-tokens", opts.max_tokens)) continue;
+    }
+
+    if (model_path.empty()) {
+        const char* env = std::getenv("HETEROACCEL_MODEL_PATH");
+        if (env) model_path = env;
+    }
+
+    if (model_path.empty()) {
+        std::cerr << "ERROR: No model path provided.\n";
+        std::cerr << "  Usage: adaptive-gpu run --model <path.gguf> --prompt \"...\"\n";
+        return 1;
+    }
+
+    agr::HeteroRuntime runtime;
+    if (!runtime.initialize()) {
+        std::cerr << "ERROR: Failed to initialize HeteroRuntime\n";
+        return 1;
+    }
+
+    std::cout << "Loading model via Phase 5 Scheduler...\n";
+    if (!runtime.loadModel(model_path, opts)) {
+        std::cerr << "ERROR: Failed to load model.\n";
+        return 1;
+    }
+
+    std::cout << "\n================================================\n";
+    std::cout << "HeteroAccel LLM Runtime\n";
+    std::cout << "================================================\n";
+    std::cout << "Prompt: " << prompt << "\n\n";
+
+    auto cb = [](const std::string& piece) {
+        std::cout << piece << std::flush;
+    };
+
+    agr::InferenceResult res = runtime.generateStreaming(model_path, prompt, cb, opts);
+    std::cout << "\n================================================\n";
+
+    if (!res.success) {
+        std::cerr << "\nERROR during generation: " << res.error << "\n";
+        return 1;
+    }
+
+    std::cout << "\nTelemetry:\n";
+    std::cout << "  Backend:    " << res.telemetry.backend << " (" << res.telemetry.scheduler_reason << ")\n";
+    if (!res.telemetry.device_name.empty()) {
+        std::cout << "  Device:     " << res.telemetry.device_name << "\n";
+    }
+    std::cout << "  TTFT:       " << res.telemetry.ttft_ms << " ms\n";
+    std::cout << "  Speed:      " << res.telemetry.tokens_per_sec << " tok/s\n";
+    std::cout << "  Total time: " << res.telemetry.total_ms << " ms\n";
+
+    runtime.shutdown();
+    return 0;
+}
+
+int runChatCommand(const std::vector<std::string>& args) {
+    std::string model_path;
+    agr::GenerationOptions opts;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (parseStringArg(args, i, "--model",      model_path))  continue;
+        if (parseIntArg(args, i,    "--max-tokens", opts.max_tokens)) continue;
+    }
+
+    if (model_path.empty()) {
+        const char* env = std::getenv("HETEROACCEL_MODEL_PATH");
+        if (env) model_path = env;
+    }
+
+    if (model_path.empty()) {
+        std::cerr << "ERROR: No model path provided.\n";
+        std::cerr << "  Usage: adaptive-gpu chat --model <path.gguf>\n";
+        return 1;
+    }
+
+    agr::HeteroRuntime runtime;
+    if (!runtime.initialize()) {
+        std::cerr << "ERROR: Failed to initialize HeteroRuntime\n";
+        return 1;
+    }
+
+    std::cout << "HeteroAccel Interactive Chat\n";
+    std::cout << "Type 'exit' or 'quit' to stop.\n\n";
+    
+    std::cout << "Loading model via Phase 5 Scheduler...\n";
+    if (!runtime.loadModel(model_path, opts)) {
+        std::cerr << "ERROR: Failed to load model.\n";
+        return 1;
+    }
+    
+    std::cout << runtime.diagnosticsReport() << "\n";
+
+    std::string input;
+    while (true) {
+        std::cout << "\nYou: ";
+        std::getline(std::cin, input);
+        if (input == "exit" || input == "quit") break;
+        if (input.empty()) continue;
+
+        std::cout << "\nAssistant: ";
+        
+        auto cb = [](const std::string& piece) {
+            std::cout << piece << std::flush;
+        };
+        
+        agr::InferenceResult res = runtime.generateStreaming(model_path, input, cb, opts);
+        
+        if (!res.success) {
+            std::cerr << "\n[Error: " << res.error << "]\n";
+        }
+        std::cout << "\n";
+    }
+
+    runtime.shutdown();
+    return 0;
+}
+
 } // namespace
 
 // =============================================================================
@@ -578,6 +711,16 @@ int main(int argc, char** argv) {
 
     if (args[0] == "devices") {
         return runDevicesCommand();
+    }
+
+    if (args[0] == "run") {
+        std::vector<std::string> rest(args.begin() + 1, args.end());
+        return runInferenceCommand(rest);
+    }
+
+    if (args[0] == "chat") {
+        std::vector<std::string> rest(args.begin() + 1, args.end());
+        return runChatCommand(rest);
     }
 
     if (args[0] == "scheduler") {

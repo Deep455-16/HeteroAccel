@@ -210,10 +210,20 @@ target_include_directories(agr_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_model PUBLIC agr_scheduler agr_mem agr_backend)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1..6)
+# agr_inference — Phase 7: LlamaCpp Adapter + HeteroRuntime API
+# =============================================================================
+add_library(agr_inference STATIC
+    src/inference/LlamaCppBackend.cpp
+    src/inference/HeteroRuntime.cpp
+)
+target_include_directories(agr_inference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_inference PUBLIC agr_model agr_llm agr_scheduler agr_mem agr_backend agr_core llama)
+
+# =============================================================================
+# adaptive-gpu — main CLI executable (Phase 1..7)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler agr_model)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_mem agr_backend agr_scheduler agr_model agr_inference)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
