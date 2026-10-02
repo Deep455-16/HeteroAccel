@@ -7,6 +7,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <atomic>
 
 namespace agr {
 
@@ -57,10 +58,16 @@ struct ModelInfo {
 
 /// A single inference request.
 struct InferenceRequest {
+    uint64_t          request_id = 0;   ///< Unique ID for cancellation
     std::string       prompt;
     GenerationOptions options;
     bool              prefer_gpu    = true;
     bool              allow_cpu_fallback = true;
+    
+    // Phase 9 extensions
+    int               priority = 0;     ///< Higher is more important (e.g., 0=BACKGROUND, 1=NORMAL, 2=HIGH, 3=CRITICAL)
+    int               workload_class = 0; ///< Can map to WorkloadClass enum from ModelTypes.h
+    std::atomic<bool>* cancel_flag = nullptr; ///< If set to true during execution, abort
 };
 
 /// Telemetry for one completed inference.

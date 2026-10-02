@@ -44,6 +44,10 @@ bool HeteroRuntime::initialize() {
     // Try loading persistent profile
     profiler_->loadProfile("profiles/performance.json");
 
+    // Phase 9: Workload registry and execution policy engine
+    workloadRegistry_ = std::make_unique<WorkloadRegistry>();
+    policyEngine_ = std::make_unique<ExecutionPolicyEngine>(*backendMgr_, *memMgr_, scheduler_->history());
+
     initialized_ = true;
     return true;
 }
@@ -102,12 +106,22 @@ bool HeteroRuntime::loadModel(const std::string& model_path,
 InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
                                            const std::string& prompt,
                                            const GenerationOptions& opts,
-                                           TokenCallback cb) {
+                                           TokenCallback cb,
+                                           uint64_t workload_id) {
     std::lock_guard<std::mutex> lk(mutex_);
     InferenceResult res;
 
     if (!initialized_) { res.error = "HeteroRuntime not initialized"; return res; }
     if (prompt.empty()) { res.error = "Prompt is empty"; return res; }
+
+    // Phase 9: Check cancellation early
+    if (workload_id != 0 && workloadRegistry_) {
+        if (workloadRegistry_->isCancelled(workload_id)) {
+            res.error = "Workload cancelled before execution";
+            return res;
+        }
+        workloadRegistry_->setRunning(workload_id);
+    }
 
     int max_threads = std::thread::hardware_concurrency();
     int base_gpu_layers = 0;
@@ -119,6 +133,28 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
     key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
     key.workload_type = "llm-inference";
     key.model_name = model_path;
+
+    // Phase 9: Consult policy engine for strategy
+    if (policyEngine_) {
+        PolicyInput pInput;
+        pInput.gpu_available = !cpu_only;
+        pInput.profile_key   = key;
+        pInput.wclass        = WorkloadClass::DEFAULT;
+        if (backendMgr_) {
+            const auto* vkDev = backendMgr_->getDevice(ComputeBackend::VULKAN);
+            if (vkDev && vkDev->is_available) {
+                pInput.available_gpu_mem = vkDev->memory_available;
+            }
+        }
+        pInput.active_workload_count = workloadRegistry_
+            ? static_cast<int>(workloadRegistry_->activeCount()) : 0;
+        PolicyDecision dec = policyEngine_->selectStrategy(pInput);
+        // Override n_gpu_layers from policy (AutoTuner may still override further)
+        base_gpu_layers = dec.n_gpu_layers;
+        cpu_only = (dec.n_gpu_layers == 0);
+        // Update key backend
+        key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
+    }
 
     TuningConfig tcfg = autoTuner_->suggestConfiguration(key, !cpu_only, max_threads);
     GenerationOptions tunedOpts = opts;
@@ -177,6 +213,15 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
     profiler_->recordEvent(event);
     autoTuner_->recordResult(key, tcfg, wall_ms, res.success);
     profiler_->saveProfile("profiles/performance.json");
+
+    // Phase 9: Update workload registry state
+    if (workload_id != 0 && workloadRegistry_) {
+        if (res.success) {
+            workloadRegistry_->setCompleted(workload_id);
+        } else {
+            workloadRegistry_->setFailed(workload_id, res.error);
+        }
+    }
 
     return res;
 }
@@ -259,6 +304,40 @@ std::string HeteroRuntime::diagnosticsReport() const {
 
     oss << "\n================================================\n";
     return oss.str();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9: Workload management
+// ---------------------------------------------------------------------------
+uint64_t HeteroRuntime::registerWorkload(const std::string& name,
+                                          const std::string& model_path,
+                                          WorkloadPriority priority,
+                                          WorkloadClass wclass) {
+    if (!workloadRegistry_) return 0;
+    return workloadRegistry_->registerWorkload(name, model_path, priority, wclass);
+}
+
+bool HeteroRuntime::cancelWorkload(uint64_t workload_id) {
+    if (!workloadRegistry_) return false;
+    return workloadRegistry_->cancel(workload_id);
+}
+
+std::vector<WorkloadEntry> HeteroRuntime::workloadSnapshot() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (!workloadRegistry_) return {};
+    return workloadRegistry_->snapshot();
+}
+
+InferenceResult HeteroRuntime::generateWorkload(const std::string& model_path,
+                                                 const std::string& prompt,
+                                                 const GenerationOptions& opts,
+                                                 WorkloadPriority priority,
+                                                 WorkloadClass wclass) {
+    if (!workloadRegistry_) {
+        return generate(model_path, prompt, opts);
+    }
+    uint64_t wid = workloadRegistry_->registerWorkload("inference", model_path, priority, wclass);
+    return doGenerate(model_path, prompt, opts, nullptr, wid);
 }
 
 } // namespace agr

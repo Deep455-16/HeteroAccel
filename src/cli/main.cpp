@@ -662,6 +662,59 @@ int runProfileCommand(const std::vector<std::string>& args) {
     return 0;
 }
 
+// =============================================================================
+// Phase 9 — Workload status and diagnostics
+// =============================================================================
+int runWorkloadsCommand() {
+    std::cout << "HeteroAccel Workload Registry\n";
+    std::cout << "=============================\n\n";
+
+    agr::HeteroRuntime runtime;
+    if (!runtime.initialize()) {
+        std::cerr << "ERROR: Failed to initialize runtime\n";
+        return 1;
+    }
+
+    auto snap = runtime.workloadSnapshot();
+    if (snap.empty()) {
+        std::cout << "No active workloads.\n";
+    } else {
+        std::printf("%-6s %-20s %-10s %-10s %-12s\n",
+            "ID", "Name", "Priority", "Class", "State");
+        std::printf("%-6s %-20s %-10s %-10s %-12s\n",
+            "------", "--------------------", "----------", "----------", "------------");
+        for (const auto& e : snap) {
+            std::printf("%-6llu %-20s %-10s %-10s %-12s\n",
+                (unsigned long long)e.id,
+                e.name.c_str(),
+                agr::toString(e.priority),
+                agr::toString(e.wclass),
+                agr::toString(e.state));
+        }
+    }
+    return 0;
+}
+
+int runStatusCommand() {
+    std::cout << "HeteroAccel Runtime Status\n";
+    std::cout << "==========================\n\n";
+
+    agr::HeteroRuntime runtime;
+    if (!runtime.initialize()) {
+        std::cerr << "ERROR: Failed to initialize runtime\n";
+        return 1;
+    }
+
+    std::cout << runtime.diagnosticsReport();
+
+    // Phase 9: show strategy info
+    std::cout << "\nPhase 9 — Execution Policy Engine\n";
+    std::cout << "Model size (unknown) + available GPU memory -> strategy selected at inference time.\n";
+    std::cout << "Use 'adaptive-gpu workloads' to see active workload queue.\n";
+    std::cout << "Use 'adaptive-gpu profile --show' to see performance history.\n";
+    return 0;
+}
+
 } // namespace
 
 // =============================================================================
@@ -728,6 +781,14 @@ int main(int argc, char** argv) {
     if (args[0] == "profile") {
         std::vector<std::string> rest(args.begin() + 1, args.end());
         return runProfileCommand(rest);
+    }
+
+    if (args[0] == "workloads") {
+        return runWorkloadsCommand();
+    }
+
+    if (args[0] == "status") {
+        return runStatusCommand();
     }
 
     if (args[0] == "scheduler") {

@@ -200,6 +200,9 @@ add_library(agr_scheduler STATIC
     src/scheduler/CUDAWorker.cpp
     src/scheduler/AdaptiveScheduler.cpp
     src/scheduler/AutoTuner.cpp
+    # Phase 9
+    src/scheduler/WorkloadRegistry.cpp
+    src/scheduler/ExecutionPolicyEngine.cpp
 )
 target_include_directories(agr_scheduler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_scheduler PUBLIC agr_core agr_mem agr_backend)

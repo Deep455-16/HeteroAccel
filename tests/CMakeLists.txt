@@ -88,3 +88,12 @@ agr_add_test(test_inference_model_info test_inference_model_info.cpp)
 agr_add_test(test_performance_history test_performance_history.cpp)
 agr_add_test(test_auto_tuner test_auto_tuner.cpp)
 agr_add_test(test_profiler_persistence test_profiler_persistence.cpp)
+
+# Phase 9 - Large-Model & Advanced Workload Optimization
+agr_add_test(test_p9_model_types test_p9_model_types.cpp)
+agr_add_test(test_p9_workload_registry test_p9_workload_registry.cpp)
+agr_add_test(test_p9_execution_policy test_p9_execution_policy.cpp)
+agr_add_test(test_p9_multi_model test_p9_multi_model.cpp)
+agr_add_test(test_p9_memory_pressure test_p9_memory_pressure.cpp)
+agr_add_test(test_p9_cancellation test_p9_cancellation.cpp)
+agr_add_test(test_p9_strategy_selection test_p9_strategy_selection.cpp)

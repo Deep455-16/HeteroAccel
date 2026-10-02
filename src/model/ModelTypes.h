@@ -1,4 +1,4 @@
-﻿// src/model/ModelTypes.h
+// src/model/ModelTypes.h
 #pragma once
 
 #include "backend/ComputeDevice.h"
@@ -33,11 +33,38 @@ inline const char* toString(ResourceResidency r) {
     }
 }
 
+/// VLM/VLA Readiness: Type of resource
+enum class ResourceType {
+    GENERIC,
+    TEXT_WEIGHTS,
+    VISION_ENCODER,
+    AUDIO_ENCODER,
+    PROJECTION,
+    DECODER,
+    EMBEDDINGS,
+    KV_CACHE
+};
+
+inline const char* toString(ResourceType t) {
+    switch(t) {
+        case ResourceType::GENERIC:        return "GENERIC";
+        case ResourceType::TEXT_WEIGHTS:   return "TEXT_WEIGHTS";
+        case ResourceType::VISION_ENCODER: return "VISION_ENCODER";
+        case ResourceType::AUDIO_ENCODER:  return "AUDIO_ENCODER";
+        case ResourceType::PROJECTION:     return "PROJECTION";
+        case ResourceType::DECODER:        return "DECODER";
+        case ResourceType::EMBEDDINGS:     return "EMBEDDINGS";
+        case ResourceType::KV_CACHE:       return "KV_CACHE";
+        default:                           return "UNKNOWN";
+    }
+}
+
 /// Generic model-resource representation (format-independent).
 struct ModelResource {
     uint64_t    id = 0;
     std::string name;
     size_t      size_bytes = 0;
+    ResourceType type = ResourceType::GENERIC;
     
     // Abstract source location (e.g., file path, offset)
     std::string source_path;
@@ -53,6 +80,60 @@ struct ModelResource {
     uint64_t access_count = 0;
     std::chrono::steady_clock::time_point last_access_time{};
 };
+
+/// Workload Classification
+enum class WorkloadClass {
+    DEFAULT,
+    LOW_LATENCY,
+    THROUGHPUT,
+    MEMORY_BOUND,
+    COMPUTE_BOUND,
+    STREAMING,
+    BACKGROUND,
+    INTERACTIVE,
+    BATCH
+};
+
+inline const char* toString(WorkloadClass c) {
+    switch(c) {
+        case WorkloadClass::DEFAULT:       return "DEFAULT";
+        case WorkloadClass::LOW_LATENCY:   return "LOW_LATENCY";
+        case WorkloadClass::THROUGHPUT:    return "THROUGHPUT";
+        case WorkloadClass::MEMORY_BOUND:  return "MEMORY_BOUND";
+        case WorkloadClass::COMPUTE_BOUND: return "COMPUTE_BOUND";
+        case WorkloadClass::STREAMING:     return "STREAMING";
+        case WorkloadClass::BACKGROUND:    return "BACKGROUND";
+        case WorkloadClass::INTERACTIVE:   return "INTERACTIVE";
+        case WorkloadClass::BATCH:         return "BATCH";
+        default:                           return "UNKNOWN";
+    }
+}
+
+/// Execution Strategy for large models
+enum class ExecutionStrategy {
+    AUTO,
+    FULL_RESIDENT,
+    PARTIAL_RESIDENT,
+    STREAMING,
+    MEMORY_PRESSURE,
+    CPU_FALLBACK,
+    ACCELERATOR_OFFLOAD,
+    HYBRID
+};
+
+inline const char* toString(ExecutionStrategy s) {
+    switch(s) {
+        case ExecutionStrategy::AUTO:                return "AUTO";
+        case ExecutionStrategy::FULL_RESIDENT:       return "FULL_RESIDENT";
+        case ExecutionStrategy::PARTIAL_RESIDENT:    return "PARTIAL_RESIDENT";
+        case ExecutionStrategy::STREAMING:           return "STREAMING";
+        case ExecutionStrategy::MEMORY_PRESSURE:     return "MEMORY_PRESSURE";
+        case ExecutionStrategy::CPU_FALLBACK:        return "CPU_FALLBACK";
+        case ExecutionStrategy::ACCELERATOR_OFFLOAD: return "ACCELERATOR_OFFLOAD";
+        case ExecutionStrategy::HYBRID:              return "HYBRID";
+        default:                                     return "UNKNOWN";
+    }
+}
 
 /// Generic representation for executable model components.
 struct ModelLayer {

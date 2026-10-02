@@ -25,7 +25,12 @@
 #include "hardware/HardwareDetector.h"
 #include "profiler/Profiler.h"
 #include "scheduler/AutoTuner.h"
+// Phase 9
+#include "scheduler/WorkloadRegistry.h"
+#include "scheduler/ExecutionPolicyEngine.h"
+#include "scheduler/Phase9Telemetry.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -78,6 +83,26 @@ public:
     const HardwareInfo&    hardware() const { return hardware_; }
     const BackendManager&  backendManager() const { return *backendMgr_; }
 
+    // Phase 9: Workload management
+    /// Register a workload for tracking. Returns workload ID.
+    uint64_t registerWorkload(const std::string& name,
+                              const std::string& model_path,
+                              WorkloadPriority priority = WorkloadPriority::NORMAL,
+                              WorkloadClass wclass = WorkloadClass::DEFAULT);
+
+    /// Cancel a registered workload.
+    bool cancelWorkload(uint64_t workload_id);
+
+    /// Get snapshot of all workloads for diagnostics.
+    std::vector<WorkloadEntry> workloadSnapshot() const;
+
+    /// Phase 9 workload-aware generate: registers workload automatically.
+    InferenceResult generateWorkload(const std::string& model_path,
+                                     const std::string& prompt,
+                                     const GenerationOptions& opts = {},
+                                     WorkloadPriority priority = WorkloadPriority::NORMAL,
+                                     WorkloadClass wclass = WorkloadClass::DEFAULT);
+
 private:
     /// Determine n_gpu_layers and cpu_only based on scheduler decision.
     void resolveBackendConfig(int& out_gpu_layers, bool& out_cpu_only) const;
@@ -85,7 +110,8 @@ private:
     InferenceResult doGenerate(const std::string& model_path,
                                const std::string& prompt,
                                const GenerationOptions& opts,
-                               TokenCallback cb);
+                               TokenCallback cb,
+                               uint64_t workload_id = 0);
 
     bool initialized_ = false;
     mutable std::mutex mutex_;
@@ -99,6 +125,10 @@ private:
     std::unique_ptr<AdaptiveScheduler> scheduler_;
     std::unique_ptr<Profiler>         profiler_;
     std::unique_ptr<AutoTuner>        autoTuner_;
+
+    // Phase 9 subsystems
+    std::unique_ptr<WorkloadRegistry>      workloadRegistry_;
+    std::unique_ptr<ExecutionPolicyEngine> policyEngine_;
 
     // Loaded model backends, keyed by model path
     std::unordered_map<std::string, std::unique_ptr<IInferenceBackend>> backends_;
