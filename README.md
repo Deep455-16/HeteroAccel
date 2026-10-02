@@ -1,90 +1,66 @@
-﻿# HeteroAccel — Phase 7 Complete (llama.cpp Integration & LLM Inference)
+# HeteroAccel
 
-> **Hardware-adaptive heterogeneous compute runtime that automatically selects CPU, Vulkan, or CUDA based on runtime conditions, telemetry, and capabilities.**
+> **A hardware-adaptive heterogeneous compute runtime for LLM inference, built as an orchestration and scheduling layer over `llama.cpp`.**
 
-Phase 7 successfully integrates llama.cpp through an adapter layer, preserving HeteroAccel's architectural boundary:
-* **HeteroAccel:** Orchestrates resources, manages memory/residency, and auto-selects the optimal backend.
-* **llama.cpp:** Tokenizes prompts and executes inference on the selected backend (CPU, Vulkan, or CUDA).
+HeteroAccel automatically evaluates system capabilities (CPU, Vulkan, CUDA), memory pressure, and historical performance to dynamically configure and execute LLM inference workloads. It is designed for resource-constrained edge devices and integrated GPUs, gracefully falling back to CPU or adjusting thread/layer configurations to ensure stability.
 
----
+## Current Engineering State (Phase 9 Complete)
 
-## 1. Implementation
+This project is an **engineering implementation**, not a theoretical research prototype. The capabilities described below reflect the actual executing code. 
 
-- **Files created:** src/inference/InferenceTypes.h, IInferenceBackend.h, LlamaCppBackend.h/.cpp, HeteroRuntime.h/.cpp.
-- **CLI Commands added:** daptive-gpu run (single inference) and daptive-gpu chat (interactive streaming).
-- **llama.cpp Integration:** Linked as a CMake FetchContent dependency (static library, tag 9999) to keep builds reproducible without injecting 10,000 files into HeteroAccel's source tree.
-- **Adapter layer:** LlamaCppBackend implements IInferenceBackend using the underlying LlamaCppEngine from Phase 3.
+The system operates via an explicit boundary:
+1. **HeteroAccel** manages the workload queue, measures memory pressure, consults historical performance, enforces safety constraints (Phase 9), and auto-tunes configurations (Phase 8).
+2. **`llama.cpp`** (integrated via FetchContent) executes the actual tensor operations and token generation on the hardware. 
 
-## 2. Architecture
+### Key Features
 
-`	ext
-                         USER APPLICATION
-                               │
-                               ↓
-                        HeteroAccel API
-                               │
-                               ↓
-                     ┌───────────────────┐
-                     │ HeteroAccel Core  │
-                     └─────────┬─────────┘
-                               │
-          ┌────────────────────┼────────────────────┐
-          ↓                    ↓                    ↓
-    ModelManager         AdaptiveScheduler     MemoryManager
-          │                    │                    │
-          ↓                    ↓                    ↓
-    LayerManager          Cost Model          Residency
-          │                    │                    │
-          └────────────────────┼────────────────────┘
-                               ↓
-                       LlamaCppAdapter
-                               ↓
-                           llama.cpp
-                               ↓
-             ┌─────────────────┼─────────────────┐
-             ↓                 ↓                 ↓
-            CPU              Vulkan             CUDA
-`
+* **Hardware Auto-Detection (Phases 1-3):** Safely detects CPU characteristics, Vulkan availability (e.g., Intel Iris Xe), and CUDA availability without crashing on missing drivers.
+* **Memory & Residency Management (Phases 4-6):** Tracks estimated memory pressure. If the system enters a `CRITICAL` state, HeteroAccel enforces CPU-only execution. Note: Phase 6 streaming/residency abstractions exist as structural readiness but do not perform mid-generation tensor migration, respecting the limitations of the underlying `llama.cpp` API.
+* **Inference Orchestration (Phase 7):** Integrates directly with `llama.cpp`, providing both synchronous and streaming generation interfaces (`adaptive-gpu run` and `adaptive-gpu chat`).
+* **Performance History & Auto-Tuning (Phase 8):** Records metrics (TTFT, tokens/sec) for specific hardware/model combinations. The AutoTuner uses this history to safely explore thread configurations and roll back if regressions occur.
+* **Execution Policy & Workload Management (Phase 9):** 
+  * The **Execution Policy Engine** evaluates the actual model file size, hardware capabilities, and current memory pressure to dictate the allowed execution envelope (e.g., `max_gpu_layers`).
+  * The **AutoTuner** is strictly constrained by the Policy Engine (e.g., it will never attempt GPU execution if the Policy Engine mandates `CPU_FALLBACK`).
+  * The **Workload Registry** provides thread-safe tracking of concurrent requests.
+  * **Mid-Generation Cancellation:** Thread-safe workload cancellation is wired directly into the `llama.cpp` decoding loop via an atomic cancel flag, stopping generation immediately upon user abort without process termination or unsafe thread kills.
+  * **Fine-Grained Concurrency:** The runtime's global mutex is released during actual token generation, allowing concurrent API requests. (Note: True concurrent generation relies on separate `LlamaCppBackend` instances per workload).
 
-## 3. Hardware Auto-Selection
+## Architecture Flow
 
-The system uses Phase 5's AdaptiveScheduler and Phase 4's MemoryManager to decide the inference path.
-- **CPU:** Always available fallback.
-- **Vulkan:** Automatically selected if available and gpu_memory_ok.
-- **CUDA:** Checked dynamically; gracefully bypassed if NVIDIA hardware is absent.
+```text
+Application / CLI Request
+        ↓
+Workload Registry (Concurrency & Cancellation tracking)
+        ↓
+Execution Policy Engine (Safety Constraints: Memory, Model Size)
+        ↓
+AutoTuner (Performance Optimization within constraints)
+        ↓
+Dynamic Model Reloading (if constraints require migration)
+        ↓
+LlamaCppBackend / LlamaCppEngine
+        ↓
+llama.cpp (CPU / Vulkan / CUDA)
+```
 
-On the development machine (**Intel Iris Xe**), the runtime correctly selects:
-`	ext
-Hardware
-  CPU:    Intel Core i5-1235U
-  Vulkan: Intel Iris Xe
-  CUDA:   unavailable
-`
+## CLI Usage
 
-## 4. Telemetry and Streaming
+The runtime provides a built-in CLI for testing and inference.
 
-Real token generation supports **per-token streaming**. The runtime logs exact telemetry on completion:
-`	ext
-Telemetry:
-  Backend:    Vulkan (Vulkan available → offloaded)
-  Device:     Intel Iris Xe
-  TTFT:       240.5 ms
-  Speed:      18.2 tok/s
-  Total time: 1450.0 ms
-`
+* **Single prompt:** `adaptive-gpu run <model.gguf> "Hello, world!"`
+* **Interactive chat:** `adaptive-gpu chat <model.gguf>`
+* **Status & Telemetry:** `adaptive-gpu status`
+* **Simulated Workloads:** `adaptive-gpu workloads` (Note: Currently displays workloads active within the current process instance).
 
-## 5. Limitations & Boundaries (Intentional)
+## Building and Testing
 
-- **Tensor Control:** llama.cpp does *not* expose fine-grained per-tensor backend placement through its public API. HeteroAccel controls 
-_gpu_layers and cpu_only, but llama.cpp handles internal distribution. This boundary is strictly respected.
-- **Concurrency:** Contexts are thread-safe per session, but heavy concurrent generation requires multiple instances of LlamaCppBackend.
-- **Feedback Loop:** Phase 7 records TaskResult metrics, but Phase 8 will fully wire these into the reinforcement learning history loop for advanced auto-tuning.
+Requirements: CMake 3.20+, C++17, and a supported compiler (MSVC, GCC, Clang).
 
-## 6. Tests
+```bash
+mkdir build && cd build
+cmake ..
+cmake --build . --config Release -j 4
+ctest -C Release --output-on-failure
+```
 
-**Status: 47 / 47 Tests Pass** (including Phase 1-6 regression).
-
-- **Build:** PASS (CPU + Vulkan).
-- **Phase 1-6 Regression:** PASS.
-- **Phase 7 Unit Tests:** PASS (	est_inference_backend_init, 	est_inference_runtime_init, 	est_inference_invalid_model, 	est_inference_model_info).
-- **Real Inference CLI:** PASS (interactive chat and run commands function locally).
+The test suite includes 57 rigorous unit and integration tests covering hardware detection, memory pressure emulation, AutoTuner constraint enforcement, mid-generation cancellation, and end-to-end `llama.cpp` integration. Tests requiring actual `.gguf` weights are gracefully skipped if no model is provided, preventing false failures.

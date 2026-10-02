@@ -113,6 +113,7 @@ public:
     /// Query state
     WorkloadState getState(uint64_t id) const;
     bool isCancelled(uint64_t id) const;
+    WorkloadClass getClass(uint64_t id) const;
 
     /// Get all active (queued or running) workloads sorted by priority descending
     std::vector<WorkloadEntry*> activeWorkloadsSorted();

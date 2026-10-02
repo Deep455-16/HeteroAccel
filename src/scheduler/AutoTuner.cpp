@@ -8,7 +8,7 @@ namespace agr {
 AutoTuner::AutoTuner(const PerformanceHistory& history, const HardwareInfo& hw)
     : history_(history), hw_(hw) {}
 
-TuningConfig AutoTuner::suggestConfiguration(const ProfileKey& key, bool gpu_available, int max_threads) {
+TuningConfig AutoTuner::suggestConfiguration(const ProfileKey& key, int max_gpu_layers, int max_threads) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     // Check if we have state
@@ -16,7 +16,7 @@ TuningConfig AutoTuner::suggestConfiguration(const ProfileKey& key, bool gpu_ava
     if (it == states_.end()) {
         // Cold start
         WorkloadState state;
-        state.current_best.n_gpu_layers = gpu_available ? 99 : 0;
+        state.current_best.n_gpu_layers = max_gpu_layers;
         state.current_best.n_threads = max_threads / 2 > 0 ? max_threads / 2 : 1;
         state.stable_samples = 0;
         states_[key] = state;
@@ -24,6 +24,13 @@ TuningConfig AutoTuner::suggestConfiguration(const ProfileKey& key, bool gpu_ava
     }
 
     auto& state = it->second;
+
+    // Phase 9 Constraint Enforcement:
+    // If the policy engine restricts layers further than the current best, we MUST obey.
+    if (state.current_best.n_gpu_layers > max_gpu_layers) {
+        state.current_best.n_gpu_layers = max_gpu_layers;
+        state.is_exploring = false; // abort any current exploration
+    }
 
     HistoricalStats hist = history_.getStats(key);
 

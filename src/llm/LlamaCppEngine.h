@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include <atomic>
 
 // Forward-declare llama.cpp opaque types so callers of this header
 // do NOT need to include llama.h (keeping llama.cpp out of the wider codebase).
@@ -38,7 +39,7 @@ public:
 
     // Run inference on a prompt.
     // Returns a populated LlmResult (check result.success).
-    LlmResult infer(const std::string& prompt);
+    LlmResult infer(const std::string& prompt, std::atomic<bool>* cancel_flag = nullptr);
 
     // Release model, context, sampler and free llama.cpp backend.
     // Safe to call multiple times.

@@ -104,8 +104,9 @@ public:
                                      WorkloadClass wclass = WorkloadClass::DEFAULT);
 
 private:
-    /// Determine n_gpu_layers and cpu_only based on scheduler decision.
-    void resolveBackendConfig(int& out_gpu_layers, bool& out_cpu_only) const;
+    /// Determine n_gpu_layers and cpu_only based on scheduler decision, model size, and pressure.
+    /// Will reload the backend if configuration changes significantly (e.g. GPU -> CPU fallback).
+    TuningConfig resolveAndApplyConfig(const std::string& model_path, int max_threads, WorkloadClass wclass);
 
     InferenceResult doGenerate(const std::string& model_path,
                                const std::string& prompt,
@@ -131,7 +132,8 @@ private:
     std::unique_ptr<ExecutionPolicyEngine> policyEngine_;
 
     // Loaded model backends, keyed by model path
-    std::unordered_map<std::string, std::unique_ptr<IInferenceBackend>> backends_;
+    std::unordered_map<std::string, std::shared_ptr<IInferenceBackend>> backends_;
+    std::unordered_map<std::string, TuningConfig> loaded_configs_;
 };
 
 } // namespace agr

@@ -172,7 +172,7 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
 // ---------------------------------------------------------------------------
 // infer()
 // ---------------------------------------------------------------------------
-LlmResult LlamaCppEngine::infer(const std::string& prompt) {
+LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* cancel_flag) {
     LlmResult result;
 
     if (!initialized_) {
@@ -216,11 +216,18 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt) {
     tokens.resize(static_cast<size_t>(n_prompt));
     result.prompt_tokens = n_prompt;
 
+    if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
+        result.error = "Cancelled before evaluation";
+        return result;
+    }
+
     // -----------------------------------------------------------------------
     // Prompt evaluation
     // -----------------------------------------------------------------------
     double t_prompt_start = nowMs();
     {
+        // Add abort callback for prompt evaluation if llama.cpp supports it
+        // Since we are using standard llama_decode, we check before decode.
         llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
         int ret = llama_decode(ctx_, batch);
         if (ret != 0) {
@@ -248,6 +255,11 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt) {
     int n_generated = 0;
 
     for (int i = 0; i < config_.max_new_tokens; ++i) {
+        if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
+            result.error = "Generation cancelled";
+            break;
+        }
+
         llama_token new_token = llama_sampler_sample(sampler, ctx_, -1);
 
         // End-of-generation token?

@@ -178,7 +178,7 @@ InferenceResult LlamaCppBackend::runInference(const InferenceRequest& req,
 
     if (!cb) {
         // --- Non-streaming path: delegate to existing LlamaCppEngine::infer()
-        LlmResult r = engine_.infer(req.prompt);
+        LlmResult r = engine_.infer(req.prompt, req.cancel_flag);
         state_ = ModelState::READY;
 
         res.success = r.success;
@@ -227,7 +227,7 @@ InferenceResult LlamaCppBackend::runInference(const InferenceRequest& req,
     // Note: True per-token streaming would require exposing iterate() on the engine.
     // This is documented as Phase 7 limitation.
     double t_start = nowMs();
-    LlmResult r = stream_engine.infer(req.prompt);
+    LlmResult r = stream_engine.infer(req.prompt, req.cancel_flag);
     double elapsed = nowMs() - t_start;
 
     if (r.success && cb) {

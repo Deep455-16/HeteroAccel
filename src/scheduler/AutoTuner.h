@@ -19,8 +19,8 @@ class AutoTuner {
 public:
     AutoTuner(const PerformanceHistory& history, const HardwareInfo& hw);
 
-    /// Generate a candidate configuration for execution.
-    TuningConfig suggestConfiguration(const ProfileKey& key, bool gpu_available, int max_threads);
+    /// Generate a candidate configuration for execution within constraints.
+    TuningConfig suggestConfiguration(const ProfileKey& key, int max_gpu_layers, int max_threads);
 
     /// Record the result of using a configuration.
     void recordResult(const ProfileKey& key, const TuningConfig& config, double duration_ms, bool success);

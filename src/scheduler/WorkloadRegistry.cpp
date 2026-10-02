@@ -88,6 +88,13 @@ bool WorkloadRegistry::isCancelled(uint64_t id) const {
     return it->second.cancel_requested.load(std::memory_order_acquire);
 }
 
+WorkloadClass WorkloadRegistry::getClass(uint64_t id) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    auto it = entries_.find(id);
+    if (it == entries_.end()) return WorkloadClass::DEFAULT;
+    return it->second.wclass;
+}
+
 std::vector<WorkloadEntry*> WorkloadRegistry::activeWorkloadsSorted() {
     std::lock_guard<std::mutex> lk(mutex_);
     std::vector<WorkloadEntry*> result;

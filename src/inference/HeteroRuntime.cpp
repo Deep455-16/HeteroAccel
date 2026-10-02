@@ -1,10 +1,9 @@
-// src/inference/HeteroRuntime.cpp
-// Phase 7: HeteroRuntime implementation.
 #include "inference/HeteroRuntime.h"
 #include "inference/LlamaCppBackend.h"
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -53,23 +52,46 @@ bool HeteroRuntime::initialize() {
 }
 
 // ---------------------------------------------------------------------------
-void HeteroRuntime::resolveBackendConfig(int& out_gpu_layers, bool& out_cpu_only) const {
-    // Legacy Phase 7 logic — we keep this signature but AutoTuner handles tuning.
-    out_gpu_layers = 0;
-    out_cpu_only   = true;
-    if (!backendMgr_) return;
-    bool vulkan_avail = backendMgr_->isBackendAvailable(ComputeBackend::VULKAN);
-    bool cuda_avail   = backendMgr_->isBackendAvailable(ComputeBackend::CUDA);
-    MemoryStats memStats;
-    if (memMgr_) memStats = memMgr_->statistics();
-    bool gpu_memory_ok = (memStats.gpu_pressure != PressureLevel::CRITICAL);
-    if ((cuda_avail || vulkan_avail) && gpu_memory_ok) {
-        out_gpu_layers = 99; 
-        out_cpu_only   = false;
-    } else {
-        out_gpu_layers = 0;
-        out_cpu_only   = true;
+TuningConfig HeteroRuntime::resolveAndApplyConfig(const std::string& model_path, int max_threads, WorkloadClass wclass) {
+    size_t actual_model_size = 0;
+    if (std::filesystem::exists(model_path)) {
+        actual_model_size = std::filesystem::file_size(model_path);
     }
+    
+    bool vulkan_avail = backendMgr_ && backendMgr_->isBackendAvailable(ComputeBackend::VULKAN);
+    bool cuda_avail   = backendMgr_ && backendMgr_->isBackendAvailable(ComputeBackend::CUDA);
+    bool gpu_avail    = vulkan_avail || cuda_avail;
+
+    ProfileKey key;
+    key.hardware_id = hardware_.cpu.model_name;
+    key.backend = gpu_avail ? ComputeBackend::VULKAN : ComputeBackend::CPU;
+    key.workload_type = "llm-inference";
+    key.model_name = model_path;
+
+    int max_gpu_layers = gpu_avail ? 99 : 0;
+    
+    if (policyEngine_) {
+        PolicyInput pInput;
+        pInput.model_size_bytes = actual_model_size;
+        pInput.gpu_available = gpu_avail;
+        pInput.profile_key   = key;
+        pInput.wclass        = wclass;
+        pInput.memory_pressure = memMgr_ ? memMgr_->statistics().gpu_pressure : PressureLevel::NORMAL;
+        if (backendMgr_) {
+            const auto* vkDev = backendMgr_->getDevice(ComputeBackend::VULKAN);
+            if (vkDev && vkDev->is_available) {
+                pInput.available_gpu_mem = vkDev->memory_available;
+            }
+        }
+        pInput.active_workload_count = workloadRegistry_ ? static_cast<int>(workloadRegistry_->activeCount()) : 0;
+        
+        PolicyDecision dec = policyEngine_->selectStrategy(pInput);
+        max_gpu_layers = dec.n_gpu_layers;
+    }
+
+    key.backend = (max_gpu_layers == 0) ? ComputeBackend::CPU : ComputeBackend::VULKAN;
+    
+    return autoTuner_->suggestConfiguration(key, max_gpu_layers, max_threads);
 }
 
 // ---------------------------------------------------------------------------
@@ -77,28 +99,32 @@ bool HeteroRuntime::loadModel(const std::string& model_path,
                                const GenerationOptions& opts) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (!initialized_) return false;
-    if (backends_.count(model_path)) return true;
 
     int max_threads = std::thread::hardware_concurrency();
-    int gpu_layers = 0;
-    bool cpu_only = true;
-    resolveBackendConfig(gpu_layers, cpu_only);
+    TuningConfig tcfg = resolveAndApplyConfig(model_path, max_threads, WorkloadClass::DEFAULT);
+    
+    // Check if loaded config differs significantly (e.g. CPU fallback)
+    if (backends_.count(model_path)) {
+        TuningConfig loaded = loaded_configs_[model_path];
+        if ((loaded.n_gpu_layers > 0 && tcfg.n_gpu_layers == 0) || 
+            (loaded.n_gpu_layers == 0 && tcfg.n_gpu_layers > 0)) {
+            // Unload to apply new placement constraint
+            backends_.erase(model_path);
+            loaded_configs_.erase(model_path);
+        } else {
+            return true;
+        }
+    }
 
-    ProfileKey key;
-    key.hardware_id = hardware_.cpu.model_name;
-    key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
-    key.workload_type = "llm-inference";
-    key.model_name = model_path;
-
-    TuningConfig tcfg = autoTuner_->suggestConfiguration(key, !cpu_only, max_threads);
     GenerationOptions tunedOpts = opts;
     tunedOpts.n_threads = tcfg.n_threads;
 
-    auto backend = std::make_unique<LlamaCppBackend>();
+    auto backend = std::make_shared<LlamaCppBackend>();
     if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) return false;
     if (!backend->createContext(tunedOpts)) return false;
 
-    backends_[model_path] = std::move(backend);
+    backends_[model_path] = backend;
+    loaded_configs_[model_path] = tcfg;
     return true;
 }
 
@@ -108,121 +134,124 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
                                            const GenerationOptions& opts,
                                            TokenCallback cb,
                                            uint64_t workload_id) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    InferenceResult res;
-
-    if (!initialized_) { res.error = "HeteroRuntime not initialized"; return res; }
-    if (prompt.empty()) { res.error = "Prompt is empty"; return res; }
-
-    // Phase 9: Check cancellation early
-    if (workload_id != 0 && workloadRegistry_) {
-        if (workloadRegistry_->isCancelled(workload_id)) {
-            res.error = "Workload cancelled before execution";
-            return res;
-        }
-        workloadRegistry_->setRunning(workload_id);
-    }
-
-    int max_threads = std::thread::hardware_concurrency();
-    int base_gpu_layers = 0;
-    bool cpu_only = true;
-    resolveBackendConfig(base_gpu_layers, cpu_only);
-
+    std::shared_ptr<IInferenceBackend> backend;
+    TuningConfig tcfg;
     ProfileKey key;
-    key.hardware_id = hardware_.cpu.model_name;
-    key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
-    key.workload_type = "llm-inference";
-    key.model_name = model_path;
+    double t0, wall_ms = 0;
+    
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        InferenceResult res;
+        if (!initialized_) { res.error = "HeteroRuntime not initialized"; return res; }
+        if (prompt.empty()) { res.error = "Prompt is empty"; return res; }
 
-    // Phase 9: Consult policy engine for strategy
-    if (policyEngine_) {
-        PolicyInput pInput;
-        pInput.gpu_available = !cpu_only;
-        pInput.profile_key   = key;
-        pInput.wclass        = WorkloadClass::DEFAULT;
-        if (backendMgr_) {
-            const auto* vkDev = backendMgr_->getDevice(ComputeBackend::VULKAN);
-            if (vkDev && vkDev->is_available) {
-                pInput.available_gpu_mem = vkDev->memory_available;
+        if (workload_id != 0 && workloadRegistry_) {
+            if (workloadRegistry_->isCancelled(workload_id)) {
+                res.error = "Workload cancelled before execution";
+                return res;
+            }
+            workloadRegistry_->setRunning(workload_id);
+        }
+
+        WorkloadClass wclass = WorkloadClass::DEFAULT;
+        if (workload_id != 0 && workloadRegistry_) {
+            wclass = workloadRegistry_->getClass(workload_id);
+        }
+        
+        int max_threads = std::thread::hardware_concurrency();
+        tcfg = resolveAndApplyConfig(model_path, max_threads, wclass);
+        
+        key.hardware_id = hardware_.cpu.model_name;
+        key.backend = (tcfg.n_gpu_layers == 0) ? ComputeBackend::CPU : ComputeBackend::VULKAN;
+        key.workload_type = "llm-inference";
+        key.model_name = model_path;
+
+        if (backends_.count(model_path)) {
+            TuningConfig loaded = loaded_configs_[model_path];
+            if ((loaded.n_gpu_layers > 0 && tcfg.n_gpu_layers == 0) || 
+                (loaded.n_gpu_layers == 0 && tcfg.n_gpu_layers > 0)) {
+                backends_.erase(model_path);
+                loaded_configs_.erase(model_path);
             }
         }
-        pInput.active_workload_count = workloadRegistry_
-            ? static_cast<int>(workloadRegistry_->activeCount()) : 0;
-        PolicyDecision dec = policyEngine_->selectStrategy(pInput);
-        // Override n_gpu_layers from policy (AutoTuner may still override further)
-        base_gpu_layers = dec.n_gpu_layers;
-        cpu_only = (dec.n_gpu_layers == 0);
-        // Update key backend
-        key.backend = cpu_only ? ComputeBackend::CPU : ComputeBackend::VULKAN;
-    }
-
-    TuningConfig tcfg = autoTuner_->suggestConfiguration(key, !cpu_only, max_threads);
-    GenerationOptions tunedOpts = opts;
-    tunedOpts.n_threads = tcfg.n_threads;
-
-    if (!backends_.count(model_path)) {
-        auto backend = std::make_unique<LlamaCppBackend>();
-        if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) {
-            res.error = "Failed to load model: " + backend->lastError();
-            return res;
+        
+        if (!backends_.count(model_path)) {
+            GenerationOptions tunedOpts = opts;
+            tunedOpts.n_threads = tcfg.n_threads;
+            auto new_backend = std::make_shared<LlamaCppBackend>();
+            if (!new_backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) {
+                res.error = "Failed to load model: " + new_backend->lastError();
+                return res;
+            }
+            if (!new_backend->createContext(tunedOpts)) {
+                res.error = "Failed to create context: " + new_backend->lastError();
+                return res;
+            }
+            backends_[model_path] = new_backend;
+            loaded_configs_[model_path] = tcfg;
         }
-        if (!backend->createContext(tunedOpts)) {
-            res.error = "Failed to create context: " + backend->lastError();
-            return res;
-        }
-        backends_[model_path] = std::move(backend);
-    }
 
-    IInferenceBackend* backend = backends_.at(model_path).get();
+        backend = backends_.at(model_path);
+    } // Unlock global mutex before inference!
 
     InferenceRequest req;
     req.prompt  = prompt;
-    req.options = tunedOpts;
+    req.options = opts;
+    req.options.n_threads = tcfg.n_threads;
     req.prefer_gpu = !backend->modelInfo().architecture.empty();
-
-    double t0 = nowMs();
-    if (cb) res = backend->generateStreaming(req, cb);
-    else    res = backend->generate(req);
-    double wall_ms = nowMs() - t0;
-
-    res.telemetry.scheduler_reason = "Tuned: layers=" + std::to_string(tcfg.n_gpu_layers) +
-                                     " threads=" + std::to_string(tcfg.n_threads);
-
-    // Phase 8: Record telemetry event
-    ProfileEvent event;
-    event.workload_type = key.workload_type;
-    event.model_name = key.model_name;
-    event.backend = key.backend;
-    event.device_name = res.telemetry.device_name;
-    event.start_timestamp_ms = t0;
-    event.end_timestamp_ms = t0 + wall_ms;
-    event.execution_duration_ms = wall_ms;
-    event.prompt_processing_ms = res.telemetry.prompt_eval_ms;
-    event.generation_ms = res.telemetry.generation_ms;
-    event.ttft_ms = res.telemetry.ttft_ms;
-    event.input_tokens = res.telemetry.prompt_tokens;
-    event.output_tokens = res.telemetry.output_tokens;
-    event.tokens_per_sec = res.telemetry.tokens_per_sec;
-    event.scheduler_gpu_layers = tcfg.n_gpu_layers;
-    event.scheduler_threads = tcfg.n_threads;
-    event.predicted_cost_ms = scheduler_->history().predictDurationMs(key);
-    event.actual_cost_ms = wall_ms;
-    event.success = res.success;
-    event.error_message = res.error;
     
-    profiler_->recordEvent(event);
-    autoTuner_->recordResult(key, tcfg, wall_ms, res.success);
-    profiler_->saveProfile("profiles/performance.json");
-
-    // Phase 9: Update workload registry state
     if (workload_id != 0 && workloadRegistry_) {
-        if (res.success) {
-            workloadRegistry_->setCompleted(workload_id);
-        } else {
-            workloadRegistry_->setFailed(workload_id, res.error);
-        }
+        req.cancel_flag = workloadRegistry_->cancelFlag(workload_id);
     }
 
+    t0 = nowMs();
+    InferenceResult res;
+    if (cb) res = backend->generateStreaming(req, cb);
+    else    res = backend->generate(req);
+    wall_ms = nowMs() - t0;
+
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        res.telemetry.scheduler_reason = "Tuned: layers=" + std::to_string(tcfg.n_gpu_layers) +
+                                         " threads=" + std::to_string(tcfg.n_threads);
+        
+        ProfileEvent event;
+        event.workload_type = key.workload_type;
+        event.model_name = key.model_name;
+        event.backend = key.backend;
+        event.device_name = res.telemetry.device_name;
+        event.start_timestamp_ms = t0;
+        event.end_timestamp_ms = t0 + wall_ms;
+        event.execution_duration_ms = wall_ms;
+        event.prompt_processing_ms = res.telemetry.prompt_eval_ms;
+        event.generation_ms = res.telemetry.generation_ms;
+        event.ttft_ms = res.telemetry.ttft_ms;
+        event.input_tokens = res.telemetry.prompt_tokens;
+        event.output_tokens = res.telemetry.output_tokens;
+        event.tokens_per_sec = res.telemetry.tokens_per_sec;
+        event.scheduler_gpu_layers = tcfg.n_gpu_layers;
+        event.scheduler_threads = tcfg.n_threads;
+        if (scheduler_) {
+            event.predicted_cost_ms = scheduler_->history().predictDurationMs(key);
+        }
+        event.actual_cost_ms = wall_ms;
+        event.success = res.success;
+        event.error_message = res.error;
+        
+        profiler_->recordEvent(event);
+        autoTuner_->recordResult(key, tcfg, wall_ms, res.success);
+        profiler_->saveProfile("profiles/performance.json");
+
+        if (workload_id != 0 && workloadRegistry_) {
+            if (res.success) {
+                workloadRegistry_->setCompleted(workload_id);
+            } else if (res.error == "Generation cancelled" || res.error == "Cancelled before evaluation") {
+                // Keep it cancelled
+            } else {
+                workloadRegistry_->setFailed(workload_id, res.error);
+            }
+        }
+    }
     return res;
 }
 
