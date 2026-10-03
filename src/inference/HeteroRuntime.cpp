@@ -91,7 +91,12 @@ TuningConfig HeteroRuntime::resolveAndApplyConfig(const std::string& model_path,
 
     key.backend = (max_gpu_layers == 0) ? ComputeBackend::CPU : ComputeBackend::VULKAN;
     
-    return autoTuner_->suggestConfiguration(key, max_gpu_layers, max_threads);
+    TuningConfig tcfg = autoTuner_->suggestConfiguration(key, max_gpu_layers, max_threads);
+    // Phase 9 Constraint Enforcement: final_n_gpu_layers <= policy_max_gpu_layers
+    if (tcfg.n_gpu_layers > max_gpu_layers) {
+        tcfg.n_gpu_layers = max_gpu_layers;
+    }
+    return tcfg;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,11 +108,10 @@ bool HeteroRuntime::loadModel(const std::string& model_path,
     int max_threads = std::thread::hardware_concurrency();
     TuningConfig tcfg = resolveAndApplyConfig(model_path, max_threads, WorkloadClass::DEFAULT);
     
-    // Check if loaded config differs significantly (e.g. CPU fallback)
+    // Check if loaded config changed n_gpu_layers (e.g. GPU -> CPU, or layer count change)
     if (backends_.count(model_path)) {
         TuningConfig loaded = loaded_configs_[model_path];
-        if ((loaded.n_gpu_layers > 0 && tcfg.n_gpu_layers == 0) || 
-            (loaded.n_gpu_layers == 0 && tcfg.n_gpu_layers > 0)) {
+        if (loaded.n_gpu_layers != tcfg.n_gpu_layers) {
             // Unload to apply new placement constraint
             backends_.erase(model_path);
             loaded_configs_.erase(model_path);
@@ -168,8 +172,7 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
 
         if (backends_.count(model_path)) {
             TuningConfig loaded = loaded_configs_[model_path];
-            if ((loaded.n_gpu_layers > 0 && tcfg.n_gpu_layers == 0) || 
-                (loaded.n_gpu_layers == 0 && tcfg.n_gpu_layers > 0)) {
+            if (loaded.n_gpu_layers != tcfg.n_gpu_layers) {
                 backends_.erase(model_path);
                 loaded_configs_.erase(model_path);
             }

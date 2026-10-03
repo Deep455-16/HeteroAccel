@@ -108,6 +108,11 @@ private:
     /// Will reload the backend if configuration changes significantly (e.g. GPU -> CPU fallback).
     TuningConfig resolveAndApplyConfig(const std::string& model_path, int max_threads, WorkloadClass wclass);
 
+    /// Execute inference using the loaded model.
+    /// CONCURRENCY LIMITATIONS (INTENTIONAL):
+    /// - Different backend/model instances may execute concurrently.
+    /// - Requests sharing the same LlamaCppBackend instance are serialized by its backend mutex.
+    /// - This is intentional for correctness, as the underlying llama_context is not thread-safe.
     InferenceResult doGenerate(const std::string& model_path,
                                const std::string& prompt,
                                const GenerationOptions& opts,

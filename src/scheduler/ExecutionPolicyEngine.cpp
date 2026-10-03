@@ -112,14 +112,18 @@ PolicyDecision ExecutionPolicyEngine::selectStrategy(const PolicyInput& input) c
     }
 
     // Adjust for workload class
+    // NOTE: Workload class may improve performance, but MUST NOT override the memory/resource
+    // safety ceiling computed above. Invariant: final n_gpu_layers <= policy ceiling.
+    int policy_gpu_ceiling = decision.n_gpu_layers; // save ceiling set by resource analysis
     if (input.wclass == WorkloadClass::BACKGROUND || input.wclass == WorkloadClass::BATCH) {
         decision.n_threads = std::max(2, decision.n_threads - 2);
         reason << " [bg/batch: reduced threads]";
     } else if (input.wclass == WorkloadClass::INTERACTIVE || input.wclass == WorkloadClass::LOW_LATENCY) {
-        if (decision.strategy == ExecutionStrategy::PARTIAL_RESIDENT) {
-            decision.n_gpu_layers = 99;
-        }
-        reason << " [interactive: maximise responsiveness]";
+        // Allow using the full ceiling but DO NOT exceed it
+        // (e.g. PARTIAL_RESIDENT ceiling=12 stays at 12; FULL_RESIDENT ceiling=99 stays at 99)
+        // n_gpu_layers is already at the ceiling; no upward override permitted.
+        (void)policy_gpu_ceiling; // already respected
+        reason << " [interactive: maximise responsiveness within policy ceiling]";
     }
 
     // Multi-workload contention

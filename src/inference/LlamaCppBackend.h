@@ -14,11 +14,12 @@
 //       v
 //   llama.cpp (CPU / Vulkan / CUDA)
 //
-// llama.cpp's public API does NOT expose fine-grained per-tensor placement.
-// HeteroAccel controls: n_gpu_layers, n_threads, n_ctx, n_batch, temperature,
-//                       seed, and cpu_only mode.
-// llama.cpp internally decides how to distribute those layers to Vulkan/CUDA
-// devices. This is documented as the architectural boundary.
+// HeteroAccel controls the execution configuration through the supported
+// llama.cpp API: n_gpu_layers, n_threads, n_ctx, n_batch, temperature,
+// seed, and cpu_only mode. HeteroAccel does NOT implement custom per-tensor
+// device placement; GPU-layer allocation via n_gpu_layers is the mechanism
+// used to distribute work between CPU and GPU.
+// llama.cpp internally maps those layers to Vulkan/CUDA devices.
 #pragma once
 
 #include "inference/IInferenceBackend.h"

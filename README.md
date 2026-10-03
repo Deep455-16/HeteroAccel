@@ -23,7 +23,8 @@ The system operates via an explicit boundary:
   * The **AutoTuner** is strictly constrained by the Policy Engine (e.g., it will never attempt GPU execution if the Policy Engine mandates `CPU_FALLBACK`).
   * The **Workload Registry** provides thread-safe tracking of concurrent requests.
   * **Mid-Generation Cancellation:** Thread-safe workload cancellation is wired directly into the `llama.cpp` decoding loop via an atomic cancel flag, stopping generation immediately upon user abort without process termination or unsafe thread kills.
-  * **Fine-Grained Concurrency:** The runtime's global mutex is released during actual token generation, allowing concurrent API requests. (Note: True concurrent generation relies on separate `LlamaCppBackend` instances per workload).
+  * **Concurrency Model (intentional):** The runtime mutex is released before entering the token-generation loop. Different backend/model instances can therefore overlap in time. However, requests sharing the same `LlamaCppBackend` instance are serialized by its internal mutex — intentional, because `llama_context` is not thread-safe. HeteroAccel does **not** claim unrestricted same-model concurrent generation.
+  * **GPU-Layer Control:** HeteroAccel controls execution through the standard `llama.cpp` API (`n_gpu_layers`, `n_threads`, `n_ctx`, `n_batch`). HeteroAccel does **not** implement custom per-tensor device placement; `n_gpu_layers` is the mechanism used to allocate work between CPU and GPU.
 
 ## Architecture Flow
 
