@@ -1,6 +1,8 @@
 #include "inference/HeteroRuntime.h"
 #include "engine/LlamaCppExecutionEngine.h"
 #include "engine/ExecutionEngineRegistry.h"
+#include "analysis/GGUFInspector.h"
+#include "analysis/CapabilityAnalyzer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -439,6 +441,37 @@ InferenceResult HeteroRuntime::generateWorkload(const std::string& model_path,
     }
     uint64_t wid = workloadRegistry_->registerWorkload("inference", model_path, priority, wclass);
     return doGenerate(model_path, prompt, opts, nullptr, wid);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12: Model Inspection and Capability Analysis
+// ---------------------------------------------------------------------------
+CapabilityReport HeteroRuntime::analyzeModel(const std::string& model_path) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    
+    // 1. Inspect Model
+    GGUFInspector inspector;
+    ModelRequirements req = inspector.inspect(model_path);
+    
+    // 2. Analyze Capabilities
+    CapabilityAnalyzer analyzer;
+    CapabilityReport report = analyzer.analyze(req, 
+                                               ExecutionEngineRegistry::instance(), 
+                                               backendMgr_.get(), 
+                                               hardware_);
+    
+    // 3. Check for historical observations
+    if (scheduler_ && req.architecture.has_value() && !req.architecture.value().empty()) {
+        auto stats = scheduler_->history().getAllStats();
+        for (const auto& [key, stat] : stats) {
+            if (key.model_name == model_path && stat.sample_count > 0) {
+                report.historical_observations_available = true;
+                break;
+            }
+        }
+    }
+    
+    return report;
 }
 
 } // namespace agr

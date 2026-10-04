@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_inference agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_inference agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -106,5 +106,15 @@ agr_add_test(test_p11_llm_via_engine test_p11_llm_via_engine.cpp)
 
 set_tests_properties(
     test_p11_llm_via_engine
+    PROPERTIES SKIP_RETURN_CODE 77
+)
+
+# Phase 12 - Model Inspection and Capability Analysis
+agr_add_test(test_p12_model_requirements test_p12_model_requirements.cpp)
+agr_add_test(test_p12_gguf_inspector test_p12_gguf_inspector.cpp)
+agr_add_test(test_p12_capability_analyzer test_p12_capability_analyzer.cpp)
+
+set_tests_properties(
+    test_p12_gguf_inspector
     PROPERTIES SKIP_RETURN_CODE 77
 )

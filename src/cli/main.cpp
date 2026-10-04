@@ -322,6 +322,9 @@ void printUsage() {
     std::cout << "Phase 7 commands:\n";
     std::cout << "  adaptive-gpu run --model <path.gguf> --prompt \"...\" [opts]  Auto-scheduled inference\n";
     std::cout << "  adaptive-gpu chat --model <path.gguf>                       Interactive auto-scheduled chat\n\n";
+    std::cout << "Phase 12 commands:\n";
+    std::cout << "  adaptive-gpu analyze <path.gguf>                            Phase 12 capability analysis\n\n";
+    std::cout << "Diagnostics:\n";
     std::cout << "  adaptive-gpu devices               Hardware discovery + auto backend selection\n";
     std::cout << "  adaptive-gpu memory                Unified Memory Manager stats\n";
     std::cout << "  adaptive-gpu scheduler             Adaptive Heterogeneous Scheduler benchmark\n";
@@ -721,6 +724,26 @@ int runStatusCommand() {
 // =============================================================================
 // main
 // =============================================================================
+// =============================================================================
+// Phase 12 — Analyze Model
+// =============================================================================
+int runAnalyzeCommand(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cerr << "Usage: adaptive-gpu analyze <path_to_model.gguf>\n";
+        return 1;
+    }
+    
+    std::string model_path = args[0];
+    
+    agr::HeteroRuntime runtime;
+    runtime.initialize();
+    
+    agr::CapabilityReport report = runtime.analyzeModel(model_path);
+    std::cout << report.formatToString() << "\n";
+    
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
 
@@ -794,6 +817,11 @@ int main(int argc, char** argv) {
 
     if (args[0] == "scheduler") {
         return runSchedulerCommand();
+    }
+    
+    if (args[0] == "analyze") {
+        std::vector<std::string> rest(args.begin() + 1, args.end());
+        return runAnalyzeCommand(rest);
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";

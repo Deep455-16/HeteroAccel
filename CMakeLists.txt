@@ -229,7 +229,7 @@ add_library(agr_inference STATIC
     src/inference/HeteroRuntime.cpp
 )
 target_include_directories(agr_inference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(agr_inference PUBLIC agr_model agr_llm agr_engine agr_scheduler agr_mem agr_backend agr_core llama agr_profiler)
+target_link_libraries(agr_inference PUBLIC agr_model agr_llm agr_analysis agr_engine agr_scheduler agr_mem agr_backend agr_core llama agr_profiler)
 
 # =============================================================================
 # agr_engine — Phase 11: Universal Execution Engine Interface
@@ -247,10 +247,21 @@ target_include_directories(agr_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_engine PUBLIC agr_llm agr_core)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1..11)
+# agr_analysis — Phase 12: Model Inspection and Capability Analysis
+# =============================================================================
+add_library(agr_analysis STATIC
+    src/analysis/CapabilityReport.cpp
+    src/analysis/GGUFInspector.cpp
+    src/analysis/CapabilityAnalyzer.cpp
+)
+target_include_directories(agr_analysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
+
+# =============================================================================
+# adaptive-gpu — main CLI executable (Phase 1..12)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution

@@ -17,6 +17,7 @@
 
 #include "inference/InferenceTypes.h"
 #include "engine/IExecutionEngine.h"
+#include "analysis/CapabilityReport.h"
 #include "backend/BackendManager.h"
 #include "backend/DeviceSelector.h"
 #include "gpu/VulkanBackend.h"
@@ -79,6 +80,9 @@ public:
 
     /// Hardware/runtime diagnostics.
     std::string diagnosticsReport() const;
+    
+    // Phase 12: Model Inspection and Capability Analysis
+    CapabilityReport analyzeModel(const std::string& model_path);
 
     /// Whether initialize() succeeded.
     bool isInitialized() const { return initialized_; }
