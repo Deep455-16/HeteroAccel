@@ -16,7 +16,7 @@
 #pragma once
 
 #include "inference/InferenceTypes.h"
-#include "inference/IInferenceBackend.h"
+#include "engine/IExecutionEngine.h"
 #include "backend/BackendManager.h"
 #include "backend/DeviceSelector.h"
 #include "gpu/VulkanBackend.h"
@@ -141,7 +141,7 @@ private:
     std::unique_ptr<ExecutionPolicyEngine> policyEngine_;
 
     // Loaded model backends, keyed by model path
-    std::unordered_map<std::string, std::shared_ptr<IInferenceBackend>> backends_;
+    std::unordered_map<std::string, std::shared_ptr<IExecutionEngine>> engines_;
     std::unordered_map<std::string, TuningConfig> loaded_configs_;
 };
 

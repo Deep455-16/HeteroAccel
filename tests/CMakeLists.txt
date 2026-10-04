@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_inference agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_inference agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -98,3 +98,13 @@ agr_add_test(test_p9_memory_pressure test_p9_memory_pressure.cpp)
 agr_add_test(test_p9_cancellation test_p9_cancellation.cpp)
 agr_add_test(test_p9_strategy_selection test_p9_strategy_selection.cpp)
 agr_add_test(test_p9_policy_ceiling test_p9_policy_ceiling.cpp)
+
+# Phase 11 - Universal Execution Engine Interface
+agr_add_test(test_p11_engine_interface test_p11_engine_interface.cpp)
+agr_add_test(test_p11_registry test_p11_registry.cpp)
+agr_add_test(test_p11_llm_via_engine test_p11_llm_via_engine.cpp)
+
+set_tests_properties(
+    test_p11_llm_via_engine
+    PROPERTIES SKIP_RETURN_CODE 77
+)

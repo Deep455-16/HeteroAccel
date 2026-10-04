@@ -1,5 +1,6 @@
 #include "inference/HeteroRuntime.h"
-#include "inference/LlamaCppBackend.h"
+#include "engine/LlamaCppExecutionEngine.h"
+#include "engine/ExecutionEngineRegistry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -109,33 +110,43 @@ bool HeteroRuntime::loadModel(const std::string& model_path,
 
     int max_threads = std::thread::hardware_concurrency();
     TuningConfig tcfg = resolveAndApplyConfig(model_path, max_threads, WorkloadClass::DEFAULT);
-    
+
     // Check if loaded config changed n_gpu_layers (e.g. GPU -> CPU, or layer count change)
-    if (backends_.count(model_path)) {
+    if (engines_.count(model_path)) {
         TuningConfig loaded = loaded_configs_[model_path];
         if (loaded.n_gpu_layers != tcfg.n_gpu_layers) {
             // Unload to apply new placement constraint
-            backends_.erase(model_path);
+            engines_[model_path]->unloadModel();
+            engines_.erase(model_path);
             loaded_configs_.erase(model_path);
         } else {
             return true;
         }
     }
 
-    GenerationOptions tunedOpts = opts;
-    tunedOpts.n_threads = tcfg.n_threads;
-
-    auto backend = std::make_shared<LlamaCppBackend>();
-    if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) {
-        last_error_ = "Failed to load model: " + backend->lastError();
+    // Phase 11: create the engine through the universal registry
+    auto engine = ExecutionEngineRegistry::instance().create("llama.cpp");
+    if (!engine) {
+        last_error_ = "Failed to create llama.cpp execution engine from registry";
         return false;
     }
-    if (!backend->createContext(tunedOpts)) {
-        last_error_ = "Failed to create context: " + backend->lastError();
+    engine->initialize();
+
+    // Build a generic ModelDescriptor
+    ModelDescriptor desc;
+    desc.model_id    = model_path;
+    desc.source_path = model_path;
+    desc.format      = ModelFormat::GGUF;
+    desc.metadata["n_gpu_layers"] = std::to_string(tcfg.n_gpu_layers);
+    desc.metadata["cpu_only"]     = (tcfg.n_gpu_layers == 0) ? "1" : "0";
+    desc.metadata["n_ctx"]        = std::to_string(opts.n_ctx);
+
+    if (!engine->loadModel(desc)) {
+        last_error_ = "Failed to load model: " + engine->lastError();
         return false;
     }
 
-    backends_[model_path] = backend;
+    engines_[model_path] = engine;
     loaded_configs_[model_path] = tcfg;
     return true;
 }
@@ -146,16 +157,16 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
                                            const GenerationOptions& opts,
                                            TokenCallback cb,
                                            uint64_t workload_id) {
-    std::shared_ptr<IInferenceBackend> backend;
+    std::shared_ptr<IExecutionEngine> engine;
     TuningConfig tcfg;
     ProfileKey key;
     double t0, wall_ms = 0;
-    
+
     {
         std::lock_guard<std::mutex> lk(mutex_);
         InferenceResult res;
         if (!initialized_) { res.error = "HeteroRuntime not initialized"; return res; }
-        if (prompt.empty()) { res.error = "Prompt is empty"; return res; }
+        if (prompt.empty())  { res.error = "Prompt is empty"; return res; }
 
         if (workload_id != 0 && workloadRegistry_) {
             if (workloadRegistry_->isCancelled(workload_id)) {
@@ -169,86 +180,124 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
         if (workload_id != 0 && workloadRegistry_) {
             wclass = workloadRegistry_->getClass(workload_id);
         }
-        
+
         int max_threads = std::thread::hardware_concurrency();
         tcfg = resolveAndApplyConfig(model_path, max_threads, wclass);
-        
-        key.hardware_id = hardware_.cpu.model_name;
-        key.backend = (tcfg.n_gpu_layers == 0) ? ComputeBackend::CPU : ComputeBackend::VULKAN;
-        key.workload_type = "llm-inference";
-        key.model_name = model_path;
 
-        if (backends_.count(model_path)) {
+        key.hardware_id   = hardware_.cpu.model_name;
+        key.backend       = (tcfg.n_gpu_layers == 0) ? ComputeBackend::CPU : ComputeBackend::VULKAN;
+        key.workload_type = "llm-inference";
+        key.model_name    = model_path;
+
+        // Reload engine if placement changed
+        if (engines_.count(model_path)) {
             TuningConfig loaded = loaded_configs_[model_path];
             if (loaded.n_gpu_layers != tcfg.n_gpu_layers) {
-                backends_.erase(model_path);
+                engines_[model_path]->unloadModel();
+                engines_.erase(model_path);
                 loaded_configs_.erase(model_path);
             }
         }
-        
-        if (!backends_.count(model_path)) {
-            GenerationOptions tunedOpts = opts;
-            tunedOpts.n_threads = tcfg.n_threads;
-            auto new_backend = std::make_shared<LlamaCppBackend>();
-            if (!new_backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) {
-                res.error = "Failed to load model: " + new_backend->lastError();
+
+        if (!engines_.count(model_path)) {
+            // Phase 11: create and load through IExecutionEngine
+            auto new_engine = ExecutionEngineRegistry::instance().create("llama.cpp");
+            if (!new_engine) {
+                res.error = "Failed to create execution engine from registry";
                 return res;
             }
-            if (!new_backend->createContext(tunedOpts)) {
-                res.error = "Failed to create context: " + new_backend->lastError();
+            new_engine->initialize();
+
+            ModelDescriptor desc;
+            desc.model_id    = model_path;
+            desc.source_path = model_path;
+            desc.format      = ModelFormat::GGUF;
+            desc.metadata["n_gpu_layers"] = std::to_string(tcfg.n_gpu_layers);
+            desc.metadata["cpu_only"]     = (tcfg.n_gpu_layers == 0) ? "1" : "0";
+            desc.metadata["n_ctx"]        = std::to_string(opts.n_ctx);
+
+            if (!new_engine->loadModel(desc)) {
+                res.error = "Failed to load model: " + new_engine->lastError();
                 return res;
             }
-            backends_[model_path] = new_backend;
+            engines_[model_path]       = new_engine;
             loaded_configs_[model_path] = tcfg;
         }
 
-        backend = backends_.at(model_path);
-    } // Unlock global mutex before inference!
+        engine = engines_.at(model_path);
+    } // Release global mutex before inference
 
-    InferenceRequest req;
-    req.prompt  = prompt;
-    req.options = opts;
-    req.options.n_threads = tcfg.n_threads;
-    req.prefer_gpu = !backend->modelInfo().architecture.empty();
-    
+    // Build generic ExecutionContext from InferenceOptions
+    ExecutionContext ctx;
+    ctx.prompt        = prompt;
+    ctx.max_tokens    = opts.max_tokens;
+    ctx.temperature   = opts.temperature;
+    ctx.seed          = opts.seed;
+    ctx.n_ctx         = opts.n_ctx;
+    ctx.n_batch       = opts.n_batch;
+    ctx.n_threads     = tcfg.n_threads;
+    ctx.n_gpu_layers  = tcfg.n_gpu_layers;
+    ctx.cpu_only      = (tcfg.n_gpu_layers == 0);
+    ctx.request_id    = workload_id;
+    ctx.streaming     = (cb != nullptr);
+
     if (workload_id != 0 && workloadRegistry_) {
-        req.cancel_flag = workloadRegistry_->cancelFlag(workload_id);
+        ctx.cancel_flag = workloadRegistry_->cancelFlag(workload_id);
     }
 
     t0 = nowMs();
-    InferenceResult res;
-    if (cb) res = backend->generateStreaming(req, cb);
-    else    res = backend->generate(req);
+    ExecutionResult er;
+    if (cb) er = engine->executeStreaming(ctx, cb);
+    else    er = engine->execute(ctx);
     wall_ms = nowMs() - t0;
+
+    // Map ExecutionResult back to InferenceResult for API compatibility
+    InferenceResult res;
+    res.success = er.success;
+    res.text    = er.output;
+    res.error   = er.error;
+    res.telemetry.backend        = toString(er.telemetry.backend_type);
+    res.telemetry.device_name    = er.telemetry.device_name;
+    res.telemetry.vulkan_used    = (er.telemetry.backend_type == ExecutionBackendType::VULKAN);
+    res.telemetry.gpu_layers     = er.telemetry.gpu_layers;
+    res.telemetry.prompt_tokens  = er.telemetry.prompt_tokens;
+    res.telemetry.output_tokens  = er.telemetry.output_tokens;
+    res.telemetry.model_load_ms  = er.telemetry.model_load_ms;
+    res.telemetry.prompt_eval_ms = er.telemetry.prompt_eval_ms;
+    res.telemetry.generation_ms  = er.telemetry.generation_ms;
+    res.telemetry.total_ms       = er.telemetry.total_ms;
+    res.telemetry.ttft_ms        = er.telemetry.ttft_ms;
+    res.telemetry.tokens_per_sec = er.telemetry.tokens_per_sec;
+    res.telemetry.fallbacks      = er.telemetry.fallbacks;
 
     {
         std::lock_guard<std::mutex> lk(mutex_);
         res.telemetry.scheduler_reason = "Tuned: layers=" + std::to_string(tcfg.n_gpu_layers) +
                                          " threads=" + std::to_string(tcfg.n_threads);
-        
+
         ProfileEvent event;
-        event.workload_type = key.workload_type;
-        event.model_name = key.model_name;
-        event.backend = key.backend;
-        event.device_name = res.telemetry.device_name;
-        event.start_timestamp_ms = t0;
-        event.end_timestamp_ms = t0 + wall_ms;
+        event.workload_type         = key.workload_type;
+        event.model_name            = key.model_name;
+        event.backend               = key.backend;
+        event.device_name           = res.telemetry.device_name;
+        event.start_timestamp_ms    = t0;
+        event.end_timestamp_ms      = t0 + wall_ms;
         event.execution_duration_ms = wall_ms;
-        event.prompt_processing_ms = res.telemetry.prompt_eval_ms;
-        event.generation_ms = res.telemetry.generation_ms;
-        event.ttft_ms = res.telemetry.ttft_ms;
-        event.input_tokens = res.telemetry.prompt_tokens;
-        event.output_tokens = res.telemetry.output_tokens;
-        event.tokens_per_sec = res.telemetry.tokens_per_sec;
-        event.scheduler_gpu_layers = tcfg.n_gpu_layers;
-        event.scheduler_threads = tcfg.n_threads;
+        event.prompt_processing_ms  = res.telemetry.prompt_eval_ms;
+        event.generation_ms         = res.telemetry.generation_ms;
+        event.ttft_ms               = res.telemetry.ttft_ms;
+        event.input_tokens          = res.telemetry.prompt_tokens;
+        event.output_tokens         = res.telemetry.output_tokens;
+        event.tokens_per_sec        = res.telemetry.tokens_per_sec;
+        event.scheduler_gpu_layers  = tcfg.n_gpu_layers;
+        event.scheduler_threads     = tcfg.n_threads;
         if (scheduler_) {
             event.predicted_cost_ms = scheduler_->history().predictDurationMs(key);
         }
-        event.actual_cost_ms = wall_ms;
-        event.success = res.success;
-        event.error_message = res.error;
-        
+        event.actual_cost_ms  = wall_ms;
+        event.success         = res.success;
+        event.error_message   = res.error;
+
         profiler_->recordEvent(event);
         autoTuner_->recordResult(key, tcfg, wall_ms, res.success);
         profiler_->saveProfile("profiles/performance.json");
@@ -257,7 +306,7 @@ InferenceResult HeteroRuntime::doGenerate(const std::string& model_path,
             if (res.success) {
                 workloadRegistry_->setCompleted(workload_id);
             } else if (res.error == "Generation cancelled" || res.error == "Cancelled before evaluation") {
-                // Keep it cancelled
+                // Keep cancelled state
             } else {
                 workloadRegistry_->setFailed(workload_id, res.error);
             }
@@ -282,19 +331,23 @@ InferenceResult HeteroRuntime::generateStreaming(const std::string& model_path,
 // ---------------------------------------------------------------------------
 void HeteroRuntime::unloadModel(const std::string& model_path) {
     std::lock_guard<std::mutex> lk(mutex_);
-    auto it = backends_.find(model_path);
-    if (it != backends_.end()) {
-        it->second->unload();
-        backends_.erase(it);
+    auto it = engines_.find(model_path);
+    if (it != engines_.end()) {
+        it->second->unloadModel();
+        it->second->shutdown();
+        engines_.erase(it);
+        loaded_configs_.erase(model_path);
     }
 }
 
 void HeteroRuntime::shutdown() {
     std::lock_guard<std::mutex> lk(mutex_);
-    for (auto& [path, backend] : backends_) {
-        backend->unload();
+    for (auto& [path, engine] : engines_) {
+        engine->unloadModel();
+        engine->shutdown();
     }
-    backends_.clear();
+    engines_.clear();
+    loaded_configs_.clear();
     scheduler_.reset();
     memMgr_.reset();
     backendMgr_.reset();
@@ -307,7 +360,9 @@ std::string HeteroRuntime::diagnosticsReport() const {
     std::lock_guard<std::mutex> lk(mutex_);
     std::ostringstream oss;
     oss << "================================================\n";
-    oss << "HeteroAccel LLM Runtime — Phase 7\n";
+    oss << "HeteroAccel LLM Runtime — Phases 1-11\n";
+    oss << "  Universal Execution Interface: IExecutionEngine\n";
+    oss << "  Active engine: llama.cpp (LlamaCppExecutionEngine)\n";
     oss << "================================================\n\n";
 
     oss << "Hardware\n";
@@ -333,13 +388,19 @@ std::string HeteroRuntime::diagnosticsReport() const {
         }
     }
 
-    oss << "\nLoaded Models: " << backends_.size() << "\n";
-    for (const auto& [path, backend] : backends_) {
-        auto info = backend->modelInfo();
+    oss << "\nLoaded Models (via IExecutionEngine): " << engines_.size() << "\n";
+    for (const auto& [path, engine] : engines_) {
+        ModelDescriptor desc = engine->currentModel();
         oss << "  " << path << "\n";
-        oss << "    State:        " << toString(backend->state()) << "\n";
-        oss << "    Quant:        " << info.quantization << "\n";
-        oss << "    Size:         " << (info.size_bytes / (1024*1024)) << " MB\n";
+        oss << "    Engine:  " << engine->identity().name << " " << engine->identity().version << "\n";
+        oss << "    Format:  " << toString(desc.format) << "\n";
+        if (!desc.architecture.empty())
+            oss << "    Arch:    " << desc.architecture << "\n";
+        if (!desc.quantization.empty())
+            oss << "    Quant:   " << desc.quantization << "\n";
+        if (desc.size_bytes.has_value())
+            oss << "    Size:    " << (desc.size_bytes.value() / (1024*1024)) << " MB\n";
+        oss << "    Caps:    " << engine->capabilities().toString() << "\n";
     }
 
     oss << "\n================================================\n";
