@@ -54,8 +54,10 @@ bool HeteroRuntime::initialize() {
 // ---------------------------------------------------------------------------
 TuningConfig HeteroRuntime::resolveAndApplyConfig(const std::string& model_path, int max_threads, WorkloadClass wclass) {
     size_t actual_model_size = 0;
-    if (std::filesystem::exists(model_path)) {
-        actual_model_size = std::filesystem::file_size(model_path);
+    std::error_code ec;
+    if (std::filesystem::exists(model_path, ec) && !ec) {
+        actual_model_size = std::filesystem::file_size(model_path, ec);
+        if (ec) actual_model_size = 0;
     }
     
     bool vulkan_avail = backendMgr_ && backendMgr_->isBackendAvailable(ComputeBackend::VULKAN);
@@ -124,8 +126,14 @@ bool HeteroRuntime::loadModel(const std::string& model_path,
     tunedOpts.n_threads = tcfg.n_threads;
 
     auto backend = std::make_shared<LlamaCppBackend>();
-    if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) return false;
-    if (!backend->createContext(tunedOpts)) return false;
+    if (!backend->loadModel(model_path, tcfg.n_gpu_layers, tcfg.n_gpu_layers == 0)) {
+        last_error_ = "Failed to load model: " + backend->lastError();
+        return false;
+    }
+    if (!backend->createContext(tunedOpts)) {
+        last_error_ = "Failed to create context: " + backend->lastError();
+        return false;
+    }
 
     backends_[model_path] = backend;
     loaded_configs_[model_path] = tcfg;

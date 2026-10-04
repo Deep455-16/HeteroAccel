@@ -74,6 +74,9 @@ public:
     /// Unload all models and free all resources.
     void shutdown();
 
+    /// Get the last error message (e.g. if initialize() or loadModel() fails).
+    const std::string& lastError() const { return last_error_; }
+
     /// Hardware/runtime diagnostics.
     std::string diagnosticsReport() const;
 
@@ -119,6 +122,7 @@ private:
                                TokenCallback cb,
                                uint64_t workload_id = 0);
 
+    std::string last_error_;
     bool initialized_ = false;
     mutable std::mutex mutex_;
 

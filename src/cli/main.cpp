@@ -119,12 +119,13 @@ void printLlmResult(const LlmResult& r, const LlmConfig& cfg) {
 
     if (r.vulkan_confirmed) {
         std::cout << "GPU device:        " << (r.device_name.empty() ? "Intel Iris Xe (Vulkan)" : r.device_name) << "\n";
-        std::cout << "Vulkan confirmed:  YES (ggml_vulkan log intercepted)\n";
+        std::cout << "Vulkan confirmed:  YES (utilized for inference)\n";
         std::cout << "GPU layers:        " << r.gpu_layers_actual
                   << " (requested " << r.gpu_layers_requested << ")\n";
     } else if (cfg.effective_gpu_layers() > 0) {
-        std::cout << "GPU:               Vulkan requested but not confirmed in logs\n";
-        std::cout << "                   (model may still be running on GPU)\n";
+        std::cout << "GPU layers:        " << r.gpu_layers_actual 
+                  << " (requested " << r.gpu_layers_requested << ")\n";
+        std::cout << "GPU:               Vulkan fallback to CPU (or unavailable)\n";
     } else {
         std::cout << "GPU layers:        0 (CPU-only mode)\n";
     }

@@ -11,16 +11,19 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <mutex>
 
 namespace agr {
 
 // ---------------------------------------------------------------------------
-// Static state — used only during the initialize() window so that the global
-// llama_log_set callback can route messages to the right engine instance.
+// Static state
 // ---------------------------------------------------------------------------
 LlamaCppEngine* LlamaCppEngine::s_currentEngine_ = nullptr;
 bool LlamaCppEngine::s_vulkanConfirmed_ = false;
 std::string LlamaCppEngine::s_vulkanDevice_;
+
+static int s_backendRefCount = 0;
+static std::mutex s_backendMutex;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -91,6 +94,11 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
 
     config_ = config;
 
+    // Validate configuration
+    if (config_.n_ctx <= 0) config_.n_ctx = 2048;
+    if (config_.n_batch <= 0) config_.n_batch = 512;
+    if (config_.max_new_tokens <= 0) config_.max_new_tokens = 256;
+
     // Validate model path
     if (config_.model_path.empty()) {
         lastError_ = "Model path is empty";
@@ -111,7 +119,13 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
     llama_log_set(reinterpret_cast<ggml_log_callback>(&LlamaCppEngine::logCallback), nullptr);
 
     // Initialize llama.cpp backend (loads Vulkan/CUDA/CPU backends)
-    llama_backend_init();
+    {
+        std::lock_guard<std::mutex> lk(s_backendMutex);
+        if (s_backendRefCount == 0) {
+            llama_backend_init();
+        }
+        s_backendRefCount++;
+    }
     backendInited_ = true;
 
     // -----------------------------------------------------------------------
@@ -131,7 +145,11 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
         lastError_ = "llama_model_load_from_file failed. "
                      "Check that the file is a valid GGUF model and that "
                      "there is enough RAM/VRAM available.";
-        llama_backend_free();
+        {
+            std::lock_guard<std::mutex> lk(s_backendMutex);
+            s_backendRefCount--;
+            if (s_backendRefCount == 0) llama_backend_free();
+        }
         backendInited_ = false;
         return false;
     }
@@ -154,7 +172,11 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
         lastError_ = "llama_init_from_model failed";
         llama_model_free(model_);
         model_ = nullptr;
-        llama_backend_free();
+        {
+            std::lock_guard<std::mutex> lk(s_backendMutex);
+            s_backendRefCount--;
+            if (s_backendRefCount == 0) llama_backend_free();
+        }
         backendInited_ = false;
         return false;
     }
@@ -185,11 +207,12 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
     // -----------------------------------------------------------------------
     result.gpu_layers_requested = config_.effective_gpu_layers();
     result.gpu_layers_actual    = gpuLayersActual_;
-    result.vulkan_confirmed     = s_vulkanConfirmed_;
+    bool vulkan_used_this_run   = s_vulkanConfirmed_ && (config_.effective_gpu_layers() > 0);
+    result.vulkan_confirmed     = vulkan_used_this_run;
     result.device_name          = s_vulkanDevice_;
-    result.backend              = (s_vulkanConfirmed_ && config_.effective_gpu_layers() > 0)
-                                      ? "Vulkan" : "CPU";
+    result.backend              = vulkan_used_this_run ? "Vulkan" : "CPU";
     result.model_load_ms        = modelLoadMs_;
+    modelLoadMs_                = 0.0; // 0 for subsequent inferences on this already-loaded engine
 
     // -----------------------------------------------------------------------
     // Tokenize prompt
@@ -226,14 +249,17 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
     // -----------------------------------------------------------------------
     double t_prompt_start = nowMs();
     {
-        // Add abort callback for prompt evaluation if llama.cpp supports it
-        // Since we are using standard llama_decode, we check before decode.
-        llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-        int ret = llama_decode(ctx_, batch);
-        if (ret != 0) {
-            result.error = "llama_decode failed during prompt evaluation (ret=" +
-                           std::to_string(ret) + ")";
-            return result;
+        int n_batch = std::max(1, config_.n_batch);
+        for (int i = 0; i < static_cast<int>(tokens.size()); i += n_batch) {
+            int n_eval = std::min(n_batch, static_cast<int>(tokens.size()) - i);
+            llama_batch batch = llama_batch_get_one(tokens.data() + i, n_eval);
+
+            int ret = llama_decode(ctx_, batch);
+            if (ret != 0) {
+                result.error = "llama_decode failed during prompt evaluation (ret=" +
+                               std::to_string(ret) + ", chunk starting at " + std::to_string(i) + ")";
+                return result;
+            }
         }
     }
     result.prompt_eval_ms = nowMs() - t_prompt_start;
@@ -276,6 +302,12 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
         }
 
         // Advance context: single-token decode
+        llama_pos current_pos = static_cast<llama_pos>(tokens.size() + i);
+        if (current_pos >= config_.n_ctx) {
+            // Context limit reached
+            break;
+        }
+
         llama_batch next = llama_batch_get_one(&new_token, 1);
         int ret = llama_decode(ctx_, next);
         if (ret != 0) {
@@ -316,7 +348,11 @@ void LlamaCppEngine::shutdown() {
         model_ = nullptr;
     }
     if (backendInited_) {
-        llama_backend_free();
+        {
+            std::lock_guard<std::mutex> lk(s_backendMutex);
+            s_backendRefCount--;
+            if (s_backendRefCount == 0) llama_backend_free();
+        }
         backendInited_ = false;
     }
     initialized_     = false;
