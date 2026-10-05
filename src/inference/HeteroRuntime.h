@@ -18,6 +18,7 @@
 #include "inference/InferenceTypes.h"
 #include "engine/IExecutionEngine.h"
 #include "analysis/CapabilityReport.h"
+#include "planner/ExecutionPlan.h"
 #include "backend/BackendManager.h"
 #include "backend/DeviceSelector.h"
 #include "gpu/VulkanBackend.h"
@@ -84,6 +85,9 @@ public:
     // Phase 12: Model Inspection and Capability Analysis
     CapabilityReport analyzeModel(const std::string& model_path);
 
+    /// Phase 13: plan how the model should execute. Does not run inference.
+    ModelExecutionPlan planExecution(const std::string& model_path);
+
     /// Whether initialize() succeeded.
     bool isInitialized() const { return initialized_; }
 
@@ -125,6 +129,8 @@ private:
                                const GenerationOptions& opts,
                                TokenCallback cb,
                                uint64_t workload_id = 0);
+
+    CapabilityReport analyzeModelUnlocked(const std::string& model_path);
 
     std::string last_error_;
     bool initialized_ = false;

@@ -3,6 +3,7 @@
 #include "engine/ExecutionEngineRegistry.h"
 #include "analysis/GGUFInspector.h"
 #include "analysis/CapabilityAnalyzer.h"
+#include "planner/ExecutionPlanner.h"
 
 #include <algorithm>
 #include <chrono>
@@ -448,7 +449,10 @@ InferenceResult HeteroRuntime::generateWorkload(const std::string& model_path,
 // ---------------------------------------------------------------------------
 CapabilityReport HeteroRuntime::analyzeModel(const std::string& model_path) {
     std::lock_guard<std::mutex> lk(mutex_);
-    
+    return analyzeModelUnlocked(model_path);
+}
+
+CapabilityReport HeteroRuntime::analyzeModelUnlocked(const std::string& model_path) {
     // 1. Inspect Model
     GGUFInspector inspector;
     ModelRequirements req = inspector.inspect(model_path);
@@ -472,6 +476,13 @@ CapabilityReport HeteroRuntime::analyzeModel(const std::string& model_path) {
     }
     
     return report;
+}
+
+ModelExecutionPlan HeteroRuntime::planExecution(const std::string& model_path) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    CapabilityReport report = analyzeModelUnlocked(model_path);
+    ExecutionPlanner planner;
+    return planner.plan(report.model, report, ExecutionEngineRegistry::instance());
 }
 
 } // namespace agr

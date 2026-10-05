@@ -5,8 +5,8 @@
 // inference session.  HeteroAccel's Execution Policy Engine (Phase 9)
 // fills this in; the execution engine reads from it.
 //
-// Phase 13 (Execution Planner) will extend this with device-placement
-// decisions. Phase 11 only defines the structural contract.
+// Phase 13 records device placement on ModelExecutionPlan. This context
+// remains the per-request contract passed into an engine.
 #pragma once
 
 #include <atomic>
@@ -16,8 +16,8 @@
 namespace agr {
 
 /// Requested compute backend for an execution session.
-/// "AUTO" means HeteroAccel chooses; the choice is not surfaced here
-/// in Phase 11 (Phase 13 will handle planning).
+/// "AUTO" means the caller did not pin a backend. The Phase 13
+/// ModelExecutionPlan is the authoritative placement decision.
 enum class ExecutionBackendHint {
     AUTO,    ///< Let HeteroAccel decide (default)
     CPU,     ///< Prefer CPU path

@@ -33,7 +33,7 @@
 //     the Phase 10 llama_backend_init reference counter handles that.
 //
 // PHASE 11 SCOPE:
-//   - Does NOT implement automatic device planning (Phase 13).
+//   - Does NOT plan device placement. ExecutionPlanner (Phase 13) does.
 //   - Does NOT implement tensor-level streaming (Phase 14).
 //   - Does NOT perform per-tensor device placement.
 //   - n_gpu_layers from ExecutionContext.n_gpu_layers is the only

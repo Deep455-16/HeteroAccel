@@ -34,8 +34,9 @@
 //   - Engines must poll it during generation and stop within a bounded
 //     number of additional tokens.
 //
-// NOT IN PHASE 11:
-//   - Automatic device planning (Phase 13)
+// NOT IN THIS INTERFACE:
+//   - Device planning lives in ExecutionPlanner (Phase 13). Engines
+//     execute a plan; they do not create one.
 //   - Tensor-level streaming / residency (Phase 14)
 //   - Heterogeneous execution graph (Phase 15)
 //   - Native HeteroAccel inference (Phase 17)

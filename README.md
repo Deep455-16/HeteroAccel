@@ -41,6 +41,7 @@ Instead, it sits between an application/inference engine and the available hardw
 │                       HETEROACCEL                       │
 │                                                          │
 │ Hardware Detection                                       │
+│ Model Analysis & Execution Planning                      │
 │ Execution Policy                                         │
 │ Adaptive Scheduling                                      │
 │ Memory & Residency Management                             │

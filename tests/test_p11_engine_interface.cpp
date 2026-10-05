@@ -146,6 +146,9 @@ int main() {
         AGR_CHECK(caps.has(EngineCapability::BACKEND_VULKAN));
         AGR_CHECK(caps.has(EngineCapability::CANCELLATION));
         AGR_CHECK(caps.has(EngineCapability::STREAMING));
+#if !defined(AGR_GGML_CUDA) || !AGR_GGML_CUDA
+        AGR_CHECK(!caps.has(EngineCapability::BACKEND_CUDA));
+#endif
 
         // Not yet initialised
         AGR_CHECK(!engine->isInitialized());

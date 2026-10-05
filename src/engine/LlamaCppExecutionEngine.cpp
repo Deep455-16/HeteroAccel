@@ -32,15 +32,19 @@ EngineIdentity LlamaCppExecutionEngine::identity() const {
 }
 
 EngineCapabilitySet LlamaCppExecutionEngine::capabilities() const {
-    return EngineCapabilitySet{
+    EngineCapabilitySet caps{
         EngineCapability::TEXT_GENERATION,
         EngineCapability::BACKEND_CPU,
         EngineCapability::BACKEND_VULKAN,
-        EngineCapability::BACKEND_CUDA,
         EngineCapability::STREAMING,
         EngineCapability::CANCELLATION,
         EngineCapability::DYNAMIC_LOADING,
     };
+    // Advertise CUDA only when this binary was linked against a CUDA ggml.
+#if defined(AGR_GGML_CUDA) && AGR_GGML_CUDA
+    caps.add(EngineCapability::BACKEND_CUDA);
+#endif
+    return caps;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,8 +110,9 @@ bool LlamaCppExecutionEngine::loadModel(const ModelDescriptor& descriptor) {
     int n_gpu_layers = 99;
     bool cpu_only    = false;
 
-    // Phase 13 will implement planning; Phase 11 always uses defaults.
-    // A caller can pre-populate descriptor.metadata["n_gpu_layers"] for now.
+    // Placement is decided by ExecutionPlanner (Phase 13). This engine
+    // applies an already-chosen budget when the caller copies it into
+    // descriptor metadata. It does not plan on its own.
     if (descriptor.metadata.count("n_gpu_layers")) {
         try { n_gpu_layers = std::stoi(descriptor.metadata.at("n_gpu_layers")); }
         catch (...) {}

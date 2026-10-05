@@ -245,6 +245,13 @@ add_library(agr_engine STATIC
 )
 target_include_directories(agr_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_engine PUBLIC agr_llm agr_core)
+# Capability bits must match the llama.cpp/ggml build. GGML_CUDA is forced
+# OFF in this project unless a CUDA build is explicitly configured.
+if(GGML_CUDA)
+    target_compile_definitions(agr_engine PUBLIC AGR_GGML_CUDA=1)
+else()
+    target_compile_definitions(agr_engine PUBLIC AGR_GGML_CUDA=0)
+endif()
 
 # =============================================================================
 # agr_analysis — Phase 12: Model Inspection and Capability Analysis
@@ -253,12 +260,13 @@ add_library(agr_analysis STATIC
     src/analysis/CapabilityReport.cpp
     src/analysis/GGUFInspector.cpp
     src/analysis/CapabilityAnalyzer.cpp
+    src/planner/ExecutionPlanner.cpp
 )
 target_include_directories(agr_analysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1..12)
+# adaptive-gpu — main CLI executable (Phase 1..13)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
 target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)

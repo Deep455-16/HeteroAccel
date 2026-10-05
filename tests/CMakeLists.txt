@@ -114,6 +114,9 @@ agr_add_test(test_p12_model_requirements test_p12_model_requirements.cpp)
 agr_add_test(test_p12_gguf_inspector test_p12_gguf_inspector.cpp)
 agr_add_test(test_p12_capability_analyzer test_p12_capability_analyzer.cpp)
 
+# Phase 13 - Execution Planner
+agr_add_test(test_p13_execution_planner test_p13_execution_planner.cpp)
+
 set_tests_properties(
     test_p12_gguf_inspector
     PROPERTIES SKIP_RETURN_CODE 77
