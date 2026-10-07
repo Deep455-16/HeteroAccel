@@ -1,4 +1,4 @@
-# HeteroAccel
+ # HeteroAccel
 
 > **A hardware-adaptive heterogeneous compute runtime for local AI inference, built as an orchestration, scheduling, memory-management, and optimization layer over inference engines such as `llama.cpp`.**
 
