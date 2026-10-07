@@ -222,6 +222,20 @@ target_include_directories(agr_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_model PUBLIC agr_scheduler agr_mem agr_backend)
 
 # =============================================================================
+# agr_residency — Phase 14: Real Model Residency & Streaming
+# =============================================================================
+add_library(agr_residency STATIC
+    src/model/FileModelDataSource.cpp
+    src/model/ModelResidencyManager.cpp
+    src/model/HostAcceleratorMemory.cpp
+    src/model/VulkanAcceleratorMemory.cpp
+    src/model/GGUFRegionExtractor.cpp
+    src/model/PlanResidencyAdapter.cpp
+)
+target_include_directories(agr_residency PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_residency PUBLIC agr_model agr_backend agr_core llama)
+
+# =============================================================================
 # agr_inference — Phase 7+11: HeteroRuntime API
 # Note: LlamaCppBackend.cpp is now compiled in agr_engine to avoid circular deps.
 # =============================================================================
@@ -229,7 +243,7 @@ add_library(agr_inference STATIC
     src/inference/HeteroRuntime.cpp
 )
 target_include_directories(agr_inference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(agr_inference PUBLIC agr_model agr_llm agr_analysis agr_engine agr_scheduler agr_mem agr_backend agr_core llama agr_profiler)
+target_link_libraries(agr_inference PUBLIC agr_model agr_residency agr_llm agr_analysis agr_engine agr_scheduler agr_mem agr_backend agr_core llama agr_profiler)
 
 # =============================================================================
 # agr_engine — Phase 11: Universal Execution Engine Interface
@@ -269,7 +283,7 @@ target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
 # adaptive-gpu — main CLI executable (Phase 1..13)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution

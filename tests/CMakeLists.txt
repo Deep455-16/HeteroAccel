@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_inference agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_inference agr_residency agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -117,7 +117,23 @@ agr_add_test(test_p12_capability_analyzer test_p12_capability_analyzer.cpp)
 # Phase 13 - Execution Planner
 agr_add_test(test_p13_execution_planner test_p13_execution_planner.cpp)
 
+# Phase 14 - Real Model Residency & Streaming
+agr_add_test(test_p14_file_source test_p14_file_source.cpp)
+agr_add_test(test_p14_bounds_check test_p14_bounds_check.cpp)
+agr_add_test(test_p14_ram_residency test_p14_ram_residency.cpp)
+agr_add_test(test_p14_budget_enforcement test_p14_budget_enforcement.cpp)
+agr_add_test(test_p14_eviction test_p14_eviction.cpp)
+agr_add_test(test_p14_prefetch test_p14_prefetch.cpp)
+agr_add_test(test_p14_failure_handling test_p14_failure_handling.cpp)
+agr_add_test(test_p14_plan_integration test_p14_plan_integration.cpp)
+agr_add_test(test_p14_large_offsets test_p14_large_offsets.cpp)
+agr_add_test(test_p14_cancellation test_p14_cancellation.cpp)
+agr_add_test(test_p14_concurrent test_p14_concurrent.cpp)
+agr_add_test(test_p14_real_gguf test_p14_real_gguf.cpp)
+
 set_tests_properties(
     test_p12_gguf_inspector
+    test_p14_large_offsets
+    test_p14_real_gguf
     PROPERTIES SKIP_RETURN_CODE 77
 )

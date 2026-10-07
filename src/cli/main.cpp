@@ -761,6 +761,88 @@ int runPlanCommand(const std::vector<std::string>& args) {
     return plan.viable ? 0 : 2;
 }
 
+#include "model/FileModelDataSource.h"
+#include "model/HostAcceleratorMemory.h"
+#include "model/ModelResidencyManager.h"
+#include "model/PlanResidencyAdapter.h"
+#include "model/GGUFRegionExtractor.h"
+
+int runResidencyCommand(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cerr << "Usage: adaptive-gpu residency <path_to_model.gguf>\n";
+        return 1;
+    }
+    const std::string& model_path = args[0];
+
+    agr::HeteroRuntime runtime;
+    runtime.initialize();
+
+    // 1. Plan Execution (Phase 13)
+    agr::ModelExecutionPlan plan = runtime.planExecution(model_path);
+    if (!plan.viable) {
+        std::cerr << "Model is not viable for execution: " << plan.explanation << "\n";
+        return 1;
+    }
+
+    // 2. Set up Residency Manager (Phase 14)
+    agr::FileModelDataSource src(model_path);
+    if (!src.open()) {
+        std::cerr << "Failed to open model file: " << src.lastError() << "\n";
+        return 1;
+    }
+
+    // Allocate budgets
+    agr::ModelResidencyBudget budget;
+    budget.ram_bytes = 4ULL * 1024 * 1024 * 1024; // 4GB max RAM for testing
+
+    agr::HostAcceleratorMemory accel(2ULL * 1024 * 1024 * 1024); // 2GB host fallback
+    agr::ModelResidencyManager mgr(src, budget, &accel);
+
+    // 3. Apply Plan to Residency Manager
+    agr::PlanResidencyAdapter adapter;
+    std::cout << "Phase 13 Plan: " << agr::toString(plan.residency) << " mode on " << agr::toString(plan.mode) << "\n";
+    std::cout << "Applying plan to Phase 14 Residency Manager...\n";
+    
+    auto result = adapter.apply(plan, model_path, mgr);
+    
+    std::cout << "\n========================================\n";
+    std::cout << "Residency Execution Report\n";
+    std::cout << "========================================\n";
+    std::cout << "Status:       " << (result.success ? "SUCCESS" : "FAILED") << "\n";
+    if (!result.success) {
+        std::cout << "Error:        " << result.error << "\n";
+    }
+    std::cout << "Explanation:  " << result.explanation << "\n\n";
+
+    std::cout << "Data source:\n";
+    std::cout << "  File-backed: YES (" << src.description() << ")\n\n";
+
+    std::cout << "Regions:\n";
+    std::cout << "  Total found: " << result.regions_total << "\n";
+    std::cout << "  In RAM:      " << result.regions_ram << "\n";
+    std::cout << "  In Accel:    " << result.regions_accel << "\n\n";
+
+    auto telem = mgr.telemetry();
+    std::cout << "RAM residency:\n";
+    std::cout << "  Budget:      " << (budget.ram_bytes / 1024 / 1024) << " MB\n";
+    std::cout << "  Current:     " << (telem.resident_ram_bytes / 1024 / 1024) << " MB\n";
+    std::cout << "  Peak:        " << (telem.peak_ram_bytes / 1024 / 1024) << " MB\n\n";
+
+    std::cout << "Accelerator:\n";
+    std::cout << "  Device:      " << accel.name() << "\n";
+    std::cout << "  Budget:      " << (accel.capacity() / 1024 / 1024) << " MB\n";
+    std::cout << "  Current:     " << (telem.resident_accelerator_bytes / 1024 / 1024) << " MB\n";
+    std::cout << "  Peak:        " << (telem.peak_accelerator_bytes / 1024 / 1024) << " MB\n\n";
+
+    std::cout << "Streaming:\n";
+    std::cout << "  Bytes read:     " << (telem.bytes_read_from_disk / 1024 / 1024) << " MB\n";
+    std::cout << "  Bytes uploaded: " << (telem.bytes_to_accelerator / 1024 / 1024) << " MB\n";
+    std::cout << "  Evictions:      " << telem.eviction_count << "\n";
+    std::cout << "  Stalls:         " << telem.stall_count << "\n";
+
+    return result.success ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
 
@@ -844,6 +926,11 @@ int main(int argc, char** argv) {
     if (args[0] == "plan") {
         std::vector<std::string> rest(args.begin() + 1, args.end());
         return runPlanCommand(rest);
+    }
+
+    if (args[0] == "residency") {
+        std::vector<std::string> rest(args.begin() + 1, args.end());
+        return runResidencyCommand(rest);
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";

@@ -37,6 +37,8 @@ public:
 
     bool upload(const Buffer& buffer, const float* data, size_t count, double* outMs) override;
     bool download(const Buffer& buffer, float* data, size_t count, double* outMs) override;
+    /// Host -> device copy of raw bytes. Completes before returning.
+    bool uploadBytes(const Buffer& buffer, const void* data, size_t sizeBytes, double* outMs = nullptr);
 
     bool executeVectorAdd(const Buffer& a, const Buffer& b, Buffer& c,
                            uint32_t elementCount, double* outExecuteMs) override;
@@ -104,6 +106,7 @@ public:
     Buffer createBuffer(size_t) override { return Buffer{}; }
     void destroyBuffer(Buffer&) override {}
     bool upload(const Buffer&, const float*, size_t, double*) override { return false; }
+    bool uploadBytes(const Buffer&, const void*, size_t, double* = nullptr) { return false; }
     bool download(const Buffer&, float*, size_t, double*) override { return false; }
     bool executeVectorAdd(const Buffer&, const Buffer&, Buffer&, uint32_t, double*) override { return false; }
     void shutdown() override {}

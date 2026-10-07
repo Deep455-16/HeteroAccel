@@ -432,15 +432,27 @@ bool VulkanBackend::copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size) {
 }
 
 bool VulkanBackend::upload(const Buffer& buffer, const float* data, size_t count, double* outMs) {
+    return uploadBytes(buffer, data, count * sizeof(float), outMs);
+}
+
+bool VulkanBackend::uploadBytes(const Buffer& buffer, const void* data, size_t nbytes, double* outMs) {
     double start = nowMs();
+    if (!data || nbytes == 0) {
+        fail("uploadBytes() called with empty payload");
+        return false;
+    }
 
     auto it = buffers_.find(buffer.id);
     if (it == buffers_.end()) {
-        fail("upload() called with unknown buffer id");
+        fail("uploadBytes() called with unknown buffer id");
         return false;
     }
     BufferRecord& record = it->second;
-    VkDeviceSize sizeBytes = count * sizeof(float);
+    if (nbytes > record.size) {
+        fail("uploadBytes() exceeds buffer size");
+        return false;
+    }
+    VkDeviceSize sizeBytes = nbytes;
 
     if (record.unifiedMemory) {
         void* mapped = nullptr;
