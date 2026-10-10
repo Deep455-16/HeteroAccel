@@ -131,6 +131,12 @@ agr_add_test(test_p14_cancellation test_p14_cancellation.cpp)
 agr_add_test(test_p14_concurrent test_p14_concurrent.cpp)
 agr_add_test(test_p14_real_gguf test_p14_real_gguf.cpp)
 
+# Phase 15 - Heterogeneous Execution Graph
+agr_add_test(test_p15_graph_validation test_p15_graph_validation.cpp)
+agr_add_test(test_p15_graph_scheduling test_p15_graph_scheduling.cpp)
+agr_add_test(test_p15_graph_failures test_p15_graph_failures.cpp)
+agr_add_test(test_p15_graph_integration test_p15_graph_integration.cpp)
+
 set_tests_properties(
     test_p12_gguf_inspector
     test_p14_large_offsets

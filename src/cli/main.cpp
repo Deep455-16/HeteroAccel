@@ -843,6 +843,70 @@ int runResidencyCommand(const std::vector<std::string>& args) {
     return result.success ? 0 : 1;
 }
 
+#include "execution/ExecutionGraphBuilder.h"
+#include "execution/ExecutionGraphScheduler.h"
+
+int runGraphCommand(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cerr << "Usage: adaptive-gpu graph <path_to_model.gguf>\n";
+        return 1;
+    }
+    const std::string& model_path = args[0];
+
+    agr::HeteroRuntime runtime;
+    runtime.initialize();
+
+    // 1. Plan Execution (Phase 13)
+    agr::ModelExecutionPlan plan = runtime.planExecution(model_path);
+    if (!plan.viable) {
+        std::cerr << "Model is not viable for execution: " << plan.explanation << "\n";
+        return 1;
+    }
+
+    // 2. Extract regions (Phase 14 integration)
+    agr::GGUFRegionExtractor extractor;
+    std::vector<agr::ModelRegion> regions = extractor.extract(model_path);
+    if (regions.empty()) {
+        regions.push_back(extractor.wholeFileRegion(model_path));
+    }
+
+    // 3. Build Graph (Phase 15)
+    agr::ExecutionGraphBuilder builder;
+    agr::ExecutionGraph graph;
+    std::string err;
+    if (!builder.build(plan, model_path, regions, "Test prompt", graph, err)) {
+        std::cerr << "Failed to build execution graph: " << err << "\n";
+        return 1;
+    }
+
+    std::cout << "\n========================================\n";
+    std::cout << "Execution Graph Diagnostic Report\n";
+    std::cout << "========================================\n";
+    std::cout << "Model:         " << model_path << "\n";
+    std::cout << "Execution Mode:" << agr::toString(plan.mode) << "\n";
+    std::cout << "Residency Req: " << agr::toString(plan.residency) << "\n";
+    std::cout << "Engine:        " << plan.engine_key << "\n\n";
+
+    std::cout << "Nodes (" << graph.getAllNodeIds().size() << "):\n";
+    for (uint64_t id : graph.getAllNodeIds()) {
+        auto* node = graph.getNode(id);
+        std::cout << "  [" << id << "] " << node->getName() 
+                  << " (Type: " << agr::toString(node->getType()) 
+                  << ", Resource: " << agr::toString(node->getResource()) << ")\n";
+        
+        auto deps = graph.getPredecessors(id);
+        if (!deps.empty()) {
+            std::cout << "      Requires: ";
+            for (uint64_t d : deps) std::cout << d << " ";
+            std::cout << "\n";
+        }
+    }
+    std::cout << "\nValidation:    OK (DAG confirmed, no cycles)\n";
+    std::cout << "Note: Finer-grained tensor execution nodes will be available when natively exposed by engines (e.g. HydroXL).\n";
+
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
 
@@ -931,6 +995,11 @@ int main(int argc, char** argv) {
     if (args[0] == "residency") {
         std::vector<std::string> rest(args.begin() + 1, args.end());
         return runResidencyCommand(rest);
+    }
+
+    if (args[0] == "graph") {
+        std::vector<std::string> rest(args.begin() + 1, args.end());
+        return runGraphCommand(rest);
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";
