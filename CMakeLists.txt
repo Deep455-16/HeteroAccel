@@ -236,6 +236,17 @@ target_include_directories(agr_residency PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_residency PUBLIC agr_model agr_backend agr_core llama)
 
 # =============================================================================
+# agr_primitives — Phase 16: Native HeteroAccel Execution Primitives
+# Tensor types, HostBuffer, CPU ops, IBackendExecutor, CpuBackendExecutor.
+# =============================================================================
+add_library(agr_primitives STATIC
+    src/primitives/cpu/CpuOps.cpp
+    src/execution/TensorComputeNode.cpp
+)
+target_include_directories(agr_primitives PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_primitives PUBLIC agr_core)
+
+# =============================================================================
 # agr_execution — Phase 15: Heterogeneous Execution Graph
 # =============================================================================
 add_library(agr_execution STATIC
@@ -244,7 +255,7 @@ add_library(agr_execution STATIC
     src/execution/ExecutionGraphBuilder.cpp
 )
 target_include_directories(agr_execution PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(agr_execution PUBLIC agr_residency agr_engine agr_analysis agr_core)
+target_link_libraries(agr_execution PUBLIC agr_residency agr_engine agr_analysis agr_primitives agr_core)
 
 
 # =============================================================================
@@ -295,7 +306,7 @@ target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
 # adaptive-gpu — main CLI executable (Phase 1..13)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler agr_primitives)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution

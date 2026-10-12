@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_inference agr_residency agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_inference agr_residency agr_execution agr_primitives agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -136,6 +136,14 @@ agr_add_test(test_p15_graph_validation test_p15_graph_validation.cpp)
 agr_add_test(test_p15_graph_scheduling test_p15_graph_scheduling.cpp)
 agr_add_test(test_p15_graph_failures test_p15_graph_failures.cpp)
 agr_add_test(test_p15_graph_integration test_p15_graph_integration.cpp)
+
+# Phase 16 - Native HeteroAccel Execution Primitives
+agr_add_test(test_p16_tensor_types test_p16_tensor_types.cpp)
+agr_add_test(test_p16_host_buffer test_p16_host_buffer.cpp)
+agr_add_test(test_p16_tensor test_p16_tensor.cpp)
+agr_add_test(test_p16_cpu_ops test_p16_cpu_ops.cpp)
+agr_add_test(test_p16_backend_executor test_p16_backend_executor.cpp)
+agr_add_test(test_p16_graph_integration test_p16_graph_integration.cpp)
 
 set_tests_properties(
     test_p12_gguf_inspector
