@@ -1,13 +1,15 @@
 // test_llm_cpu_inference.cpp
 //
 // Verifies that a real CPU-only inference succeeds.
-// Skips with code 77 if no model is provided via HETEROACCEL_MODEL_PATH.
+// Skips with code 77 if no model is provided via HETEROACCEL_MODEL_PATH
+// or if the file does not exist on disk.
 
 #include "mini_test.h"
 #include "llm/LlamaCppEngine.h"
 #include "llm/LlmConfig.h"
 
 #include <cstdlib>
+#include <filesystem>
 
 int main() {
     std::cout << "== test_llm_cpu_inference ==\n";
@@ -15,6 +17,10 @@ int main() {
     const char* model_env = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!model_env || std::string(model_env).empty()) {
         std::cout << "  SKIP: HETEROACCEL_MODEL_PATH is not set.\n";
+        return 77;
+    }
+    if (!std::filesystem::exists(model_env)) {
+        std::cout << "  SKIP: model file not found on disk: " << model_env << "\n";
         return 77;
     }
 

@@ -247,6 +247,26 @@ target_include_directories(agr_primitives PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(agr_primitives PUBLIC agr_core)
 
 # =============================================================================
+# agr_hydroxl — Phase 17: HydroXL Native Inference Engine
+# Independent native engine: GGUF loader, Q4_K dequant, BPE tokenizer,
+# Qwen2 forward pass, KV cache, sampler, and IExecutionEngine adapter.
+# Does NOT link against llama at runtime; uses agr_engine for interfaces only.
+# =============================================================================
+add_library(agr_hydroxl STATIC
+    src/hydroxl/GGUFLoader.cpp
+    src/hydroxl/HydroXLDequant.cpp
+    src/hydroxl/HydroXLOps.cpp
+    src/hydroxl/HydroXLKVCache.cpp
+    src/hydroxl/HydroXLSampler.cpp
+    src/hydroxl/HydroXLTokenizer.cpp
+    src/hydroxl/HydroXLModel.cpp
+    src/hydroxl/HydroXLForwardPass.cpp
+    src/hydroxl/HydroXLEngine.cpp
+)
+target_include_directories(agr_hydroxl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_hydroxl PUBLIC agr_engine agr_core)
+
+# =============================================================================
 # agr_execution — Phase 15: Heterogeneous Execution Graph
 # =============================================================================
 add_library(agr_execution STATIC
@@ -306,7 +326,7 @@ target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
 # adaptive-gpu — main CLI executable (Phase 1..13)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler agr_primitives)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler agr_primitives agr_hydroxl)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution

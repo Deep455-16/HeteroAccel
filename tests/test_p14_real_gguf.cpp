@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -18,6 +19,11 @@ int main() {
     std::string path(env_path);
     if (path.empty()) {
         std::cout << "SKIP: HETEROACCEL_MODEL_PATH is empty.\n";
+        return 77;
+    }
+
+    if (!std::filesystem::exists(path)) {
+        std::cout << "SKIP: model file not found on disk: " << path << "\n";
         return 77;
     }
 

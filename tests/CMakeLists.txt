@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_inference agr_residency agr_execution agr_primitives agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core)
+    target_link_libraries(${test_name} PRIVATE agr_inference agr_residency agr_execution agr_primitives agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core agr_hydroxl)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -149,5 +149,20 @@ set_tests_properties(
     test_p12_gguf_inspector
     test_p14_large_offsets
     test_p14_real_gguf
+    PROPERTIES SKIP_RETURN_CODE 77
+)
+
+# Phase 17 - HydroXL Native Inference Engine
+agr_add_test(test_p17_dequant          test_p17_dequant.cpp)
+agr_add_test(test_p17_ops              test_p17_ops.cpp)
+agr_add_test(test_p17_kv_cache         test_p17_kv_cache.cpp)
+agr_add_test(test_p17_sampler          test_p17_sampler.cpp)
+agr_add_test(test_p17_gguf_loader      test_p17_gguf_loader.cpp)
+agr_add_test(test_p17_engine_lifecycle test_p17_engine_lifecycle.cpp)
+agr_add_test(test_p17_real_model       test_p17_real_model.cpp)
+
+set_tests_properties(
+    test_p17_gguf_loader
+    test_p17_real_model
     PROPERTIES SKIP_RETURN_CODE 77
 )

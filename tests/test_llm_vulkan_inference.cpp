@@ -1,7 +1,8 @@
 // test_llm_vulkan_inference.cpp
 //
 // Verifies that Vulkan-offloaded inference succeeds.
-// Skips with code 77 if no model is provided OR if Vulkan is not available.
+// Skips with code 77 if no model is provided OR if Vulkan is not available
+// or if the model file does not exist on disk.
 
 #include "mini_test.h"
 #include "llm/LlamaCppEngine.h"
@@ -9,6 +10,7 @@
 #include "hardware/HardwareDetector.h"
 
 #include <cstdlib>
+#include <filesystem>
 
 int main() {
     std::cout << "== test_llm_vulkan_inference ==\n";
@@ -24,6 +26,10 @@ int main() {
     const char* model_env = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!model_env || std::string(model_env).empty()) {
         std::cout << "  SKIP: HETEROACCEL_MODEL_PATH is not set.\n";
+        return 77;
+    }
+    if (!std::filesystem::exists(model_env)) {
+        std::cout << "  SKIP: model file not found on disk: " << model_env << "\n";
         return 77;
     }
 

@@ -11,6 +11,7 @@
 #include "scheduler/AdaptiveScheduler.h"
 #include "scheduler/CostModel.h"
 #include "inference/HeteroRuntime.h"
+#include "hydroxl/HydroXLEngine.h"
 
 #include <algorithm>
 #include <chrono>
@@ -326,6 +327,8 @@ void printUsage() {
     std::cout << "  adaptive-gpu analyze <path.gguf>                            Phase 12 capability analysis\n\n";
     std::cout << "Phase 13 commands:\n";
     std::cout << "  adaptive-gpu plan <path.gguf>                               Phase 13 execution plan\n\n";
+    std::cout << "Phase 17 commands:\n";
+    std::cout << "  adaptive-gpu hydroxl --model <path.gguf> [options]          Phase 17 HydroXL native inference engine\n\n";
     std::cout << "Diagnostics:\n";
     std::cout << "  adaptive-gpu devices               Hardware discovery + auto backend selection\n";
     std::cout << "  adaptive-gpu memory                Unified Memory Manager stats\n";
@@ -1000,6 +1003,75 @@ int main(int argc, char** argv) {
     if (args[0] == "graph") {
         std::vector<std::string> rest(args.begin() + 1, args.end());
         return runGraphCommand(rest);
+    }
+
+    // Phase 17 — HydroXL native inference engine
+    // Usage: adaptive-gpu hydroxl --model <path> [--prompt <text>]
+    //                              [--max-tokens <N>] [--temperature <f>]
+    if (args[0] == "hydroxl") {
+        // Register the engine so the registry picks it up
+        HydroXLEngine::registerInRegistry();
+
+        std::string model_path, prompt = "Hello, world!";
+        int max_tokens = 128;
+        float temperature = 0.8f;
+
+        for (size_t i = 1; i < args.size(); ++i) {
+            if ((args[i] == "--model" || args[i] == "-m") && i + 1 < args.size())
+                model_path = args[++i];
+            else if ((args[i] == "--prompt" || args[i] == "-p") && i + 1 < args.size())
+                prompt = args[++i];
+            else if ((args[i] == "--max-tokens" || args[i] == "-n") && i + 1 < args.size())
+                max_tokens = std::stoi(args[++i]);
+            else if ((args[i] == "--temperature" || args[i] == "-t") && i + 1 < args.size())
+                temperature = std::stof(args[++i]);
+        }
+
+        if (model_path.empty()) {
+            std::cerr << "Usage: adaptive-gpu hydroxl --model <path.gguf> [--prompt <text>]\n"
+                         "                             [--max-tokens <N>] [--temperature <f>]\n";
+            return 1;
+        }
+
+        HydroXLEngine engine;
+        if (!engine.initialize()) {
+            std::cerr << "HydroXL: failed to initialize engine\n"; return 1;
+        }
+
+        ModelDescriptor desc;
+        desc.model_id    = "hydroxl-model";
+        desc.source_path = model_path;
+        desc.format      = ModelFormat::GGUF;
+
+        std::cout << "HydroXL: loading " << model_path << " ...\n";
+        auto t0 = std::chrono::steady_clock::now();
+        if (!engine.loadModel(desc)) {
+            std::cerr << "HydroXL: load error: " << engine.lastEngineError().message << "\n";
+            return 1;
+        }
+        double load_ms = std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+        std::cout << "HydroXL: loaded in " << (int)load_ms << " ms\n";
+        std::cout << "HydroXL: generating...\n";
+
+        ExecutionContext ctx;
+        ctx.prompt      = prompt;
+        ctx.max_tokens  = max_tokens;
+        ctx.temperature = temperature;
+        ctx.seed        = 42;
+
+        auto result = engine.executeStreaming(ctx, [](const std::string& tok){
+            std::cout << tok << std::flush;
+        });
+        std::cout << "\n";
+
+        if (!result.success) {
+            std::cerr << "HydroXL error: " << result.error << "\n"; return 1;
+        }
+        std::cout << "\n[tokens: " << result.telemetry.output_tokens
+                  << ", speed: " << (int)result.telemetry.tokens_per_sec << " tok/s"
+                  << ", backend: " << result.telemetry.backend_name << "]\n";
+        return 0;
     }
 
     std::cerr << "Unknown command: " << args[0] << "\n";

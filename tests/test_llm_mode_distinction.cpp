@@ -2,7 +2,7 @@
 //
 // Verifies that the runtime accurately distinguishes and reports
 // CPU vs Vulkan modes when using the same model.
-// Skips if no model OR no Vulkan device.
+// Skips if no model OR no Vulkan device OR model file not found on disk.
 
 #include "mini_test.h"
 #include "llm/LlamaCppEngine.h"
@@ -10,6 +10,7 @@
 #include "hardware/HardwareDetector.h"
 
 #include <cstdlib>
+#include <filesystem>
 
 int main() {
     std::cout << "== test_llm_mode_distinction ==\n";
@@ -23,6 +24,10 @@ int main() {
     const char* model_env = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!model_env || std::string(model_env).empty()) {
         std::cout << "  SKIP: HETEROACCEL_MODEL_PATH not set.\n";
+        return 77;
+    }
+    if (!std::filesystem::exists(model_env)) {
+        std::cout << "  SKIP: model file not found on disk: " << model_env << "\n";
         return 77;
     }
 
