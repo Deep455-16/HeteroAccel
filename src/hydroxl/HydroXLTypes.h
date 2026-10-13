@@ -1,20 +1,9 @@
 // src/hydroxl/HydroXLTypes.h
 // Phase 17: HydroXL Native Inference Engine — shared types.
 //
-// This header defines the core data types, metadata structures, and
-// constants used across all HydroXL subsystems (loader, tokenizer,
-// operators, KV-cache, sampler, and engine).
-//
-// HydroXL is an INDEPENDENT native inference engine. It does NOT
-// delegate to llama.cpp for model execution, tokenization, or sampling.
-//
-// Supported architecture (Phase 17): Qwen2 (qwen2)
-// Supported quantization: F32 (FLOAT32 dequantized from Q4_K_M)
+// Supported architectures (Phase 17): Qwen2 (qwen2)
+// Supported quantization: Q4_K, Q3_K, Q8_0, F16, F32
 // Supported modality: TEXT_GENERATION
-//
-// Real-model test requires:
-//   C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-//   (absent on build system; real-model test exits 77 = SKIP)
 
 #pragma once
 
@@ -45,40 +34,49 @@ enum class GGUFValueType : uint32_t {
 };
 
 // ---------------------------------------------------------------------------
-// GGUF tensor data types (ggml_type equivalent — only what HydroXL needs)
+// GGUF tensor data types — values MUST match the real GGML enum in ggml.h
+//
+//   F32=0  F16=1  Q4_0=2  Q4_1=3
+//   (4,5 removed from ggml)
+//   Q5_0=6  Q5_1=7  Q8_0=8  Q8_1=9
+//   Q2_K=10  Q3_K=11  Q4_K=12  Q5_K=13  Q6_K=14  Q8_K=15
+//
+// The _S / _M / _L suffixes (Q3_K_M, Q4_K_M, …) are quantization preset
+// names used in model filenames. On disk all variants of a K-quant share
+// the same block layout and the same GGML type integer.
 // ---------------------------------------------------------------------------
 enum class GGMLType : uint32_t {
-    F32      = 0,
-    F16      = 1,
-    Q4_0     = 2,
-    Q4_1     = 3,
-    Q5_0     = 6,
-    Q5_1     = 7,
-    Q8_0     = 8,
-    Q8_1     = 9,
-    Q2_K     = 10,
-    Q3_K_S   = 11,
-    Q3_K_M   = 12,
-    Q3_K_L   = 13,
-    Q4_K_S   = 14,
-    Q4_K_M   = 15,   ///< Block-quantized 4-bit, medium mode (Phase 17 target)
-    Q5_K_S   = 16,
-    Q5_K_M   = 17,
-    Q6_K     = 18,
-    Q8_K     = 19,
-    UNKNOWN  = 0xFFFF,
+    F32   = 0,
+    F16   = 1,
+    Q4_0  = 2,
+    Q4_1  = 3,
+    // 4, 5 — removed from GGML
+    Q5_0  = 6,
+    Q5_1  = 7,
+    Q8_0  = 8,
+    Q8_1  = 9,
+    Q2_K  = 10,
+    Q3_K  = 11,   ///< Q3_K_{S,M,L} — same 110-byte block, type id 11
+    Q4_K  = 12,   ///< Q4_K_{S,M}   — same 144-byte block, type id 12
+    Q5_K  = 13,
+    Q6_K  = 14,
+    Q8_K  = 15,
+    UNKNOWN = 0xFFFF,
 };
 
 inline const char* toString(GGMLType t) {
     switch (t) {
-        case GGMLType::F32:    return "F32";
-        case GGMLType::F16:    return "F16";
-        case GGMLType::Q4_0:   return "Q4_0";
-        case GGMLType::Q4_K_S: return "Q4_K_S";
-        case GGMLType::Q4_K_M: return "Q4_K_M";
-        case GGMLType::Q8_0:   return "Q8_0";
-        case GGMLType::Q6_K:   return "Q6_K";
-        default:               return "Other";
+        case GGMLType::F32:   return "F32";
+        case GGMLType::F16:   return "F16";
+        case GGMLType::Q4_0:  return "Q4_0";
+        case GGMLType::Q8_0:  return "Q8_0";
+        case GGMLType::Q2_K:  return "Q2_K";
+        case GGMLType::Q3_K:  return "Q3_K";
+        case GGMLType::Q4_K:  return "Q4_K";
+        case GGMLType::Q5_K:  return "Q5_K";
+        case GGMLType::Q6_K:  return "Q6_K";
+        case GGMLType::Q8_K:  return "Q8_K";
+        default:              return "Other";
     }
 }
 
@@ -105,7 +103,7 @@ struct Qwen2HParams {
     uint32_t n_ff            = 0;   ///< FFN intermediate size
     uint32_t n_ctx_max       = 0;   ///< Max supported context length
     float    rms_norm_eps    = 1e-6f;
-    float    rope_freq_base  = 1000000.0f;  ///< RoPE frequency base (Qwen2 uses 1M)
+    float    rope_freq_base  = 1000000.0f;
     float    rope_freq_scale = 1.0f;
     uint32_t n_head_dim      = 0;   ///< n_embd / n_heads
 
@@ -116,25 +114,36 @@ struct Qwen2HParams {
 };
 
 // ---------------------------------------------------------------------------
-// Q4_K block format constants (GGML_TYPE_Q4_K)
-//
-// Q4_K_M packs 256 float32 values into one block:
-//   - 2 FP16 super-scale and super-min  (d, dmin)
-//   - 12 bytes: 8 x 6-bit scale/min pairs encoded in 96 bits
-//   - 128 bytes: 256 x 4-bit values (2 per byte)
-// Total block size: 144 bytes for 256 elements
+// Q4_K block format constants  (GGML_TYPE_Q4_K = 12)
+// 256 elements / 144 bytes per block
+//   Bytes  0..1  : d    (FP16) super-scale
+//   Bytes  2..3  : dmin (FP16) super-min
+//   Bytes  4..15 : 12 bytes — 8 x (6-bit scale, 6-bit min)
+//   Bytes 16..143: 128 bytes — 256 x 4-bit values
 // ---------------------------------------------------------------------------
-static constexpr int Q4K_BLOCK_SIZE       = 256;   ///< Elements per block
-static constexpr int Q4K_N_SCALE_GROUPS   = 8;     ///< Sub-groups per block
-static constexpr int Q4K_RAW_BLOCK_BYTES  = 144;   ///< 4 + 12 + 128 bytes
+static constexpr int Q4K_BLOCK_SIZE      = 256;
+static constexpr int Q4K_N_SCALE_GROUPS  = 8;
+static constexpr int Q4K_RAW_BLOCK_BYTES = 144;
 
 // ---------------------------------------------------------------------------
-// Q8_0 block format constants
-// 32 elements per block: 2-byte scale (FP16) + 32 x INT8
-// Block = 34 bytes
+// Q3_K block format constants  (GGML_TYPE_Q3_K = 11)
+// 256 elements / 110 bytes per block
+//   Bytes   0..31 : hmask  (32 bytes) — bit 2 (high bit) per element
+//   Bytes  32..95 : qs     (64 bytes) — bits 0-1 per element (2 per byte)
+//   Bytes  96..107: scales (12 bytes) — 16 x 6-bit scales
+//   Bytes 108..109: d      (FP16)  super-scale
 // ---------------------------------------------------------------------------
-static constexpr int Q8_0_BLOCK_SIZE     = 32;
-static constexpr int Q8_0_BLOCK_BYTES    = 34;
+static constexpr int Q3K_BLOCK_SIZE      = 256;
+static constexpr int Q3K_RAW_BLOCK_BYTES = 110;
+
+// ---------------------------------------------------------------------------
+// Q8_0 block format constants  (GGML_TYPE_Q8_0 = 8)
+// 32 elements / 34 bytes per block
+//   Bytes  0..1  : d   (FP16) block scale
+//   Bytes  2..33 : 32 x INT8 quantized values
+// ---------------------------------------------------------------------------
+static constexpr int Q8_0_BLOCK_SIZE  = 32;
+static constexpr int Q8_0_BLOCK_BYTES = 34;
 
 // ---------------------------------------------------------------------------
 // BPE token ID type and special tokens

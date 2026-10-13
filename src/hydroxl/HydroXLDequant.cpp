@@ -189,5 +189,76 @@ void dequant_f16(const void* raw_data, float* dst, uint64_t n_elements) noexcept
     }
 }
 
+// ---------------------------------------------------------------------------
+// Q3_K block dequantization  (GGML_TYPE_Q3_K = 11)
+//
+// Block layout (110 bytes, 256 elements):
+//   [0..31]   hmask   (32 bytes) — high bit (bit 2) per element, 1 bit/elem
+//   [32..95]  qs      (64 bytes) — low 2 bits per element, 2 bits/byte × 4
+//   [96..107] scales  (12 bytes) — 16 × 6-bit scales packed two per byte
+//   [108..109] d      (FP16)     — super-scale
+//
+// Dequantize: for element i in block:
+//   low2  = (qs[i/4] >> ((i%4)*2)) & 0x03
+//   high1 = (hmask[i/8] >> (i%8)) & 0x01
+//   q3    = low2 | (high1 << 2)       → unsigned 3-bit in [0,7]
+//   q3s   = q3 - 4                    → signed [-4, 3]
+//   group = i / 16   (16 groups of 16 elements)
+//   x[i]  = d * scale[group] * q3s
+//
+// Scale decode (12 bytes → 16 × 6-bit values):
+//   Bytes are packed as two 6-bit values per 3-byte triplet (ggml layout).
+// ---------------------------------------------------------------------------
+void dequant_q3k_block(const uint8_t* raw, float* dst) noexcept {
+    const uint8_t* hmask  = raw;          // [0..31]  32 bytes
+    const uint8_t* qs     = raw + 32;     // [32..95] 64 bytes
+    const uint8_t* sc_raw = raw + 96;     // [96..107] 12 bytes
+    uint16_t d_raw;
+    std::memcpy(&d_raw, raw + 108, 2);
+    float d = fp16_to_float(d_raw);
+
+    // Decode 16 × 6-bit scales from 12 bytes.
+    // ggml packs them as: each group of 4 scales uses 3 bytes.
+    //   scale[4k+0] = sc_raw[3k]   & 0x3F
+    //   scale[4k+1] = sc_raw[3k+1] & 0x3F
+    //   scale[4k+2] = ((sc_raw[3k] >> 6) | ((sc_raw[3k+2] & 0x0F) << 2)) & 0x3F
+    //   scale[4k+3] = ((sc_raw[3k+1] >> 6) | ((sc_raw[3k+2] & 0xF0) >> 2)) & 0x3F
+    // Then apply sign: scale[j] -= 32 to centre around 0 → keep as int8, use as signed
+    int8_t scales[16];
+    for (int k = 0; k < 4; ++k) {
+        int b0 = sc_raw[3*k + 0];
+        int b1 = sc_raw[3*k + 1];
+        int b2 = sc_raw[3*k + 2];
+        scales[4*k + 0] = static_cast<int8_t>((b0 & 0x3F) - 32);
+        scales[4*k + 1] = static_cast<int8_t>((b1 & 0x3F) - 32);
+        scales[4*k + 2] = static_cast<int8_t>(((b0 >> 6) | ((b2 & 0x0F) << 2)) - 32);
+        scales[4*k + 3] = static_cast<int8_t>(((b1 >> 6) | ((b2 & 0xF0) >> 2)) - 32);
+    }
+
+    // Dequantize 256 elements
+    for (int i = 0; i < Q3K_BLOCK_SIZE; ++i) {
+        int low2  = (qs[i / 4] >> ((i % 4) * 2)) & 0x03;
+        int high1 = (hmask[i / 8] >> (i % 8)) & 0x01;
+        int q3    = low2 | (high1 << 2);   // unsigned [0,7]
+        int q3s   = q3 - 4;               // signed  [-4,3]
+        int group = i / 16;               // 16 groups of 16 elements
+        dst[i] = d * static_cast<float>(scales[group]) * static_cast<float>(q3s);
+    }
+}
+
+bool dequant_q3k(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
+    if (!raw_data || !dst || n_elements == 0) return false;
+    if (n_elements % Q3K_BLOCK_SIZE != 0) return false;
+
+    uint64_t n_blocks = n_elements / Q3K_BLOCK_SIZE;
+    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
+
+    for (uint64_t b = 0; b < n_blocks; ++b) {
+        dequant_q3k_block(src + b * Q3K_RAW_BLOCK_BYTES,
+                          dst  + b * Q3K_BLOCK_SIZE);
+    }
+    return true;
+}
+
 } // namespace hydroxl
 } // namespace agr
