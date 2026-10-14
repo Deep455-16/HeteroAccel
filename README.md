@@ -1,999 +1,631 @@
- # HeteroAccel
+# HeteroAccel
 
-> **A hardware-adaptive heterogeneous compute runtime for local AI inference, built as an orchestration, scheduling, memory-management, and optimization layer over inference engines such as `llama.cpp`.**
+### Hardware-Adaptive AI Inference Runtime with Native Heterogeneous Execution and HydroXL
 
-HeteroAccel provides a common runtime layer between local AI applications/inference engines and heterogeneous hardware.
+HeteroAccel is a hardware-adaptive runtime designed to make local AI inference more flexible across heterogeneous computing environments. It combines hardware capability detection, memory management, adaptive scheduling, execution planning, model residency and streaming, heterogeneous execution graphs, and native execution primitives into a unified runtime architecture.
 
-It automatically evaluates available hardware, memory pressure, workload requirements, and historical performance to determine how a workload should execute on the current machine.
+With Phase 17, the project introduces **HydroXL**, HeteroAccel's native inference-engine subsystem, laying the groundwork for tighter integration between inference execution and hardware-aware runtime scheduling.
 
-The goal is simple:
+The project is being developed incrementally, with an emphasis on modularity, measurable execution behavior, correctness, resource awareness, and extensibility.
 
-> **Applications should not need to manually optimize themselves for every CPU, GPU, memory configuration, or operating system. HeteroAccel provides the adaptive execution layer underneath them.**
-
-HeteroAccel is designed for local and privacy-preserving AI workloads where models, prompts, documents, and inference can remain on the user's machine.
+> **Development status:** Phases 1–17 have been implemented according to the project's development roadmap. Build success, test results, hardware support, model compatibility, and performance must be verified against the current repository and target machine before making release-level claims.
 
 ---
 
-## What HeteroAccel Is
+## Table of Contents
 
-HeteroAccel is an **adaptive execution and optimization runtime**.
-
-It is not itself an LLM, RAG system, AI IDE, or inference engine.
-
-Instead, it sits between an application/inference engine and the available hardware:
-
-```text
-┌──────────────────────────────────────────────────────────┐
-│                    AI APPLICATIONS                       │
-│                                                          │
-│  AI IDE │ Local Chat │ RAG │ Agents │ VLM/VLA │ Tools   │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│              INFERENCE / COMPUTE ENGINE                  │
-│                                                          │
-│       llama.cpp │ Colibrì │ Other Compatible Engines     │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                       HETEROACCEL                       │
-│                                                          │
-│ Hardware Detection                                       │
-│ Model Analysis & Execution Planning                      │
-│ Execution Policy                                         │
-│ Adaptive Scheduling                                      │
-│ Memory & Residency Management                             │
-│ Streaming / Prefetch Infrastructure                      │
-│ Performance Profiling                                    │
-│ Auto-Tuning                                              │
-│ Workload Management & Cancellation                       │
-└──────────────────────────┬───────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│                     LOCAL HARDWARE                       │
-│                                                          │
-│ CPU │ GPU │ NPU* │ RAM │ VRAM │ NVMe / SSD              │
-└──────────────────────────────────────────────────────────┘
-
-*NPU support depends on the connected inference/backend implementation.
-```
-
-### Core Principle
-
-HeteroAccel should be changed when a **generic hardware/runtime capability** is missing.
-
-Application-specific functionality should remain in the application or inference engine.
-
-| Requirement                  | Where it belongs         |
-| ---------------------------- | ------------------------ |
-| AI IDE interface             | AI IDE                   |
-| RAG retrieval                | RAG system               |
-| Agent/tool orchestration     | Agent layer              |
-| New model architecture       | Inference engine         |
-| Tensor/kernel implementation | Inference backend/engine |
-| Hardware detection           | **HeteroAccel**          |
-| CPU/GPU workload scheduling  | **HeteroAccel**          |
-| Memory pressure management   | **HeteroAccel**          |
-| RAM/VRAM residency           | **HeteroAccel**          |
-| Adaptive execution policy    | **HeteroAccel**          |
-| Runtime profiling            | **HeteroAccel**          |
-| Hardware-aware autotuning    | **HeteroAccel**          |
-| Workload cancellation        | **HeteroAccel**          |
-
-This allows HeteroAccel to act as reusable infrastructure rather than becoming tightly coupled to one application.
+- [Project Overview](#project-overview)
+- [Core Objectives](#core-objectives)
+- [Architecture](#architecture)
+- [Implementation Status](#implementation-status)
+- [Phase 11–17 Highlights](#phase-11-17-highlights)
+- [HydroXL](#hydroxl)
+- [Hardware and Backend Support](#hardware-and-backend-support)
+- [Requirements](#requirements)
+- [Build Instructions](#build-instructions)
+- [Running HeteroAccel](#running-heteroaccel)
+- [Testing and Validation](#testing-and-validation)
+- [Design Principles](#design-principles)
+- [Current Limitations](#current-limitations)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
 
 ---
 
-## Current Engineering State
+## Project Overview
 
-**Phase 10 — Production Hardening Complete**
+Local AI inference is constrained by available RAM, GPU memory, compute capability, memory bandwidth, and the characteristics of the inference engine. A runtime that assumes a single fixed hardware configuration may fail to use available resources effectively or may attempt workloads that exceed the machine's capabilities.
 
-The current implementation includes Phases 1–10.
+HeteroAccel addresses these challenges by introducing a runtime layer that evaluates the host environment, inspects model requirements, plans execution, manages model residency, and coordinates execution through a modular architecture.
 
-Latest validated state:
+The intended design separates three major responsibilities:
 
-* Release build succeeds
-* **58/58 tests passed**
-* 0 failed
-* 0 skipped
-* Real CPU LLM inference validated
-* Real Vulkan LLM inference validated
-* CPU/Vulkan mode distinction validated
-* llama.cpp integration validated
-* Final repository state clean
+1. **Runtime intelligence:** Hardware detection, resource management, scheduling, profiling, and execution planning.
+2. **Execution infrastructure:** Device and backend abstractions, tensors, buffers, execution graphs, and data movement.
+3. **Inference engines:** Pluggable engines that execute supported model workloads, including the native HydroXL subsystem and external engine adapters.
 
-The current implementation is an engineering runtime, not merely a theoretical architecture.
+The long-term goal is to provide an extensible runtime that applications can integrate without having to implement hardware-aware execution management independently.
 
----
+## Core Objectives
 
-## What HeteroAccel Actually Does
+- Detect relevant CPU, memory, GPU, and backend capabilities.
+- Represent hardware capabilities through reusable abstractions.
+- Integrate inference engines behind a common execution interface.
+- Manage memory allocation and resource pressure.
+- Schedule workloads according to available resources and execution policies.
+- Collect performance telemetry and support profiling-based tuning.
+- Inspect supported model metadata and estimate execution requirements.
+- Generate execution plans before attempting model execution.
+- Manage model residency, file-backed data access, streaming, prefetching, and eviction.
+- Represent heterogeneous workloads using an execution graph.
+- Provide native tensor, buffer, and execution primitives.
+- Develop HydroXL as a native inference-engine subsystem.
+- Establish a foundation for future engine plugins, SDKs, and external integrations.
 
-The runtime is responsible for the following execution pipeline:
-
-```text
-Application Request
-        ↓
-Workload Registration
-        ↓
-Hardware / Runtime State
-        ↓
-Execution Policy
-        ↓
-Performance History
-        ↓
-Auto-Tuning
-        ↓
-Scheduling
-        ↓
-Memory / Residency Management
-        ↓
-Inference Backend
-        ↓
-llama.cpp
-        ↓
-CPU / Vulkan / CUDA
-```
-
-HeteroAccel determines the **execution envelope and configuration**.
-
-The inference engine performs the actual model computation.
-
-For the current llama.cpp integration:
-
-```text
-HeteroAccel
-    ↓
-LlamaCppBackend
-    ↓
-LlamaCppEngine
-    ↓
-llama.cpp
-    ↓
-CPU / Vulkan / CUDA
-```
-
-HeteroAccel does not replace llama.cpp's tensor kernels.
-
-Instead, it controls and optimizes the environment in which the inference engine executes.
+These objectives describe the project's architecture and direction. They do not imply that every model, operation, accelerator, or workload is already supported.
 
 ---
 
-## Major Capabilities
+## Architecture
 
-### Hardware Auto-Detection
+HeteroAccel is organized into cooperating subsystems.
 
-HeteroAccel detects available compute resources including:
+### 1. Hardware and Capability Detection
 
-* CPU characteristics
-* Vulkan availability
-* CUDA availability
-* available memory information
-* accelerator capabilities
+Responsible for identifying the host's available computing resources and the capabilities exposed by supported backends.
 
-It can therefore adapt its execution strategy to different machines.
+### 2. Memory Management and Scheduling
 
-Example:
+Coordinates resource-aware workload execution, memory availability, and scheduling decisions. The objective is to make execution decisions based on actual resource constraints rather than assuming that every model can remain fully resident.
 
-```text
-Intel CPU + Intel Iris Xe
-        ↓
-HeteroAccel
-        ↓
-CPU / Vulkan
-```
+### 3. Execution Engine Abstraction
 
-Another machine:
+Provides a common interface through which the runtime can communicate with inference engines. The architecture separates runtime orchestration from engine-specific implementation details.
 
-```text
-AMD/Intel CPU + NVIDIA GPU
-        ↓
-HeteroAccel
-        ↓
-CPU / CUDA
-```
+### 4. Model Inspection and Capability Analysis
 
-CPU-only machine:
+Inspects supported model formats and compares estimated model requirements with the capabilities of the current machine.
 
-```text
-CPU only
-   ↓
-HeteroAccel
-   ↓
-CPU execution
-```
+### 5. Execution Planning
 
-### Adaptive Scheduling
+Creates a structured execution plan from model requirements, runtime configuration, and available capabilities. Planning results should distinguish between detected facts, estimates, unsupported requirements, and execution constraints.
 
-HeteroAccel evaluates workloads using factors such as:
+### 6. Model Residency and Streaming
 
-* hardware capability
-* current device load
-* memory availability
-* estimated compute cost
-* transfer cost
-* historical performance
-* workload priority
-* execution constraints
+Manages model data residency and file-backed access. It provides the foundation for controlled loading, region extraction, prefetching, and eviction where supported.
 
-The scheduler therefore does not simply attempt to maximize GPU utilization.
+### 7. Heterogeneous Execution Graph
 
-Its objective is to choose an execution strategy appropriate for the workload and current machine state.
+Represents execution as a graph of operations and dependencies, providing a foundation for coordinating supported work across execution components.
 
-### Memory and Residency Management
+### 8. Native Execution Primitives
 
-HeteroAccel maintains a unified abstraction for resources that may reside in:
+Introduces the lower-level abstractions needed for native execution, including tensor and buffer representations, supported operations, backend interfaces, and synchronization or transfer mechanisms.
 
-```text
-DISK
- ↓
-CPU/RAM
- ↓
-GPU/VRAM
-```
+### 9. HydroXL Native Inference Engine
 
-The runtime tracks resource residency and memory pressure.
-
-It supports concepts such as:
-
-* FREE
-* RESIDENT
-* LOADING
-* EVICTING
-* CRITICAL/HIGH/NORMAL/LOW priorities
-* CPU/GPU residency
-* memory pressure detection
-* eviction
-* memory pools
-* transfer management
-
-If the system reaches a critical memory condition, the execution policy can force CPU-only execution to maintain stability.
-
-#### Important Limitation
-
-The current Phase 6 streaming/residency system provides the runtime infrastructure for model/resource streaming and prefetching, but it does **not** claim arbitrary mid-generation tensor migration inside llama.cpp.
-
-Actual inference placement is currently controlled through the supported llama.cpp configuration mechanisms.
-
-### llama.cpp Integration
-
-HeteroAccel currently provides a real llama.cpp execution path.
-
-The main interface is:
-
-```text
-HeteroRuntime
-      ↓
-LlamaCppBackend
-      ↓
-LlamaCppEngine
-      ↓
-llama.cpp
-```
-
-HeteroAccel can configure parameters such as:
-
-```text
-n_gpu_layers
-n_threads
-n_ctx
-n_batch
-```
-
-The current integration therefore allows HeteroAccel to control how llama.cpp uses CPU and supported GPU execution.
-
-#### Important Limitation
-
-HeteroAccel does **not** currently implement arbitrary per-tensor device placement.
-
-For llama.cpp, `n_gpu_layers` is the primary mechanism used to control CPU/GPU allocation.
-
-### Performance Profiling
-
-HeteroAccel records runtime information including:
-
-* time to first token (TTFT)
-* tokens per second
-* queue time
-* execution duration
-* hardware/model combinations
-* performance history
-
-This information is used to improve future decisions.
-
-### Auto-Tuning
-
-The AutoTuner uses historical performance information to explore configurations such as:
-
-```text
-n_threads
-n_gpu_layers
-```
-
-while respecting the limits imposed by the Execution Policy Engine.
-
-If a configuration causes a regression or failure, the tuner can roll back rather than blindly continuing exploration.
-
-The policy engine always has authority over the allowed execution envelope.
-
-### Execution Policy
-
-The Execution Policy Engine evaluates:
-
-* model size
-* hardware capabilities
-* current memory pressure
-* active workloads
-* historical performance
-
-It can select strategies such as:
-
-```text
-FULL_RESIDENT
-PARTIAL_RESIDENT
-STREAMING
-CPU_FALLBACK
-MEMORY_PRESSURE
-```
-
-The policy prevents performance tuning from violating system safety constraints.
-
-For example:
-
-```text
-Policy:
-CPU fallback required
-
-        ↓
-
-AutoTuner cannot override policy
-
-        ↓
-
-CPU-only execution
-```
-
-### Workload Management
-
-HeteroAccel maintains a workload registry for:
-
-* active workloads
-* workload priority
-* workload classification
-* cancellation
-* concurrent workload tracking
-
-Cancellation is propagated into the llama.cpp generation loop through a thread-safe atomic cancellation mechanism.
-
-This allows a generation to be stopped without terminating the entire application.
-
-### Concurrency
-
-Different backend/model instances can overlap in time where supported.
-
-Requests sharing the same `LlamaCppBackend` instance are intentionally serialized because the underlying llama.cpp context is not thread-safe.
-
-HeteroAccel therefore does **not** claim unrestricted concurrent generation using one shared llama.cpp context.
+Provides the native inference-engine subsystem introduced in Phase 17. It is intended to develop alongside HeteroAccel's execution infrastructure rather than replace the runtime's hardware-awareness and orchestration responsibilities.
 
 ---
 
-## How to Use HeteroAccel Today
+## Implementation Status
 
-There are currently two primary ways to use HeteroAccel.
+The development roadmap through Phase 17 is as follows.
 
-### Method 1 — Use the Built-in CLI
+| Phase | Component | Purpose |
+|---|---|---|
+| 1 | Hardware Detection | Detect available hardware and system resources. |
+| 2 | Backend and Device Abstraction | Represent computing devices and execution backends. |
+| 3 | LLM Engine Integration | Establish the initial inference-engine integration. |
+| 4 | Memory Manager | Manage runtime memory resources. |
+| 5 | Adaptive Scheduler | Coordinate workloads according to resource constraints. |
+| 6 | Model Streaming Infrastructure | Establish the initial infrastructure for model data access and streaming. |
+| 7 | HeteroAccel Runtime | Integrate runtime execution, backend selection, and command-line workflows. |
+| 8 | Profiling and Auto-Tuning | Collect execution metrics and maintain performance history for tuning decisions. |
+| 9 | Execution Policies | Represent workload execution strategies and resource-pressure policies. |
+| 10 | Production Hardening | Improve robustness, input validation, error handling, and lifecycle management. |
+| 11 | Universal Execution Engine Interface | Introduce a common interface for supported inference engines. |
+| 12 | Model Inspection and Capability Analysis | Inspect model requirements and evaluate hardware compatibility. |
+| 13 | Execution Planner | Generate structured execution plans for model workloads. |
+| 14 | Model Residency and Streaming | Add model residency management, region extraction, prefetching, and eviction infrastructure. |
+| 15 | Heterogeneous Execution Graph | Introduce a graph-based representation for execution and dependencies. |
+| 16 | Native HeteroAccel Execution Primitives | Establish native tensor, buffer, operation, and backend foundations. |
+| 17 | Native HydroXL Inference Engine | Introduce HydroXL as a native inference-engine subsystem. |
 
-This is the easiest way to test HeteroAccel.
+---
 
-#### Step 1 — Build
+## Phase 11–17 Highlights
 
-Requirements:
+### Phase 11 — Universal Execution Engine Interface
 
-* CMake 3.20+
-* C++17 compiler
-* MSVC, GCC, or Clang
-* supported Vulkan/CUDA environment when GPU execution is desired
+Introduced a common engine-facing abstraction intended to decouple runtime orchestration from engine-specific inference implementations.
 
-```bash
-mkdir build
-cd build
+The reported components include:
 
-cmake ..
-cmake --build . --config Release -j 4
+- `IExecutionEngine`
+- `ExecutionContext`
+- `ExecutionResult`
+- `EngineCapability`
+- `EngineIdentity`
+- `ExecutionEngineRegistry`
+- `LlamaCppExecutionEngine`
+
+The runtime can use the common interface to interact with registered engines while keeping engine-specific execution behavior behind the appropriate implementation.
+
+### Phase 12 — Model Inspection and Capability Analysis
+
+Introduced model-inspection and capability-analysis components for evaluating model requirements against the current system.
+
+The reported components include:
+
+- `ModelRequirements`
+- `IModelInspector`
+- `GGUFInspector`
+- `CapabilityAnalyzer`
+- `CapabilityReport`
+
+The command-line workflow includes model analysis through:
+
+```powershell
+adaptive-gpu analyze <model.gguf>
 ```
 
-#### Step 2 — Run the Test Suite
+The purpose is to provide information about a model's requirements and the detected environment before attempting execution. Analysis output should not be treated as proof that every operation or the entire model can execute successfully on a particular backend.
 
-```bash
-ctest -C Release --output-on-failure
+### Phase 13 — Execution Planner
+
+Introduced a planning layer that produces a structured representation of the intended model execution strategy.
+
+The reported components include:
+
+- `ModelExecutionPlan`
+- `ExecutionPlanner`
+- `PlannerConfig`
+- `PlanReason`
+
+The command-line workflow includes:
+
+```powershell
+adaptive-gpu plan <model.gguf>
 ```
 
-A successful current build should report:
+The planner provides a foundation for explaining execution decisions and identifying constraints before loading or executing a model.
 
-```text
-58/58 tests passed
-```
+### Phase 14 — Model Residency and Streaming
 
-#### Step 3 — Obtain a Compatible GGUF Model
+Introduced infrastructure for managing model data residency and controlled access to model regions.
 
-HeteroAccel's current end-to-end LLM path uses llama.cpp-compatible GGUF models.
+The reported components include:
 
-For example:
+- `ModelResidencyManager`
+- `GGUFRegionExtractor`
+- `PlanResidencyAdapter`
+- File-backed model data access
+- Residency tracking
+- Transfer and prefetch infrastructure
+- LRU-style eviction
+- Telemetry and cancellation support
 
-```text
-Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-```
+This phase establishes infrastructure for managing model data under constrained memory conditions.
 
-Place the model somewhere accessible to the machine.
+Streaming model data does not eliminate the compute, memory-bandwidth, latency, or working-memory requirements of inference. Actual execution behavior depends on the model architecture, supported operations, implementation, hardware, and workload.
 
-Example:
+### Phase 15 — Heterogeneous Execution Graph
+
+Introduced the graph-based execution foundation for representing operations and their dependencies.
+
+The execution graph is intended to support more structured coordination between runtime components and execution backends. Its practical capabilities depend on the implemented graph operations, dependency handling, backend integrations, and validation tests.
+
+### Phase 16 — Native HeteroAccel Execution Primitives
+
+Introduced the native execution foundations needed to reduce dependence on engine-specific abstractions at the runtime level.
+
+This phase establishes the direction for:
+
+- Tensor and buffer representations.
+- Native operation execution.
+- Backend abstractions.
+- Data transfer and synchronization mechanisms.
+- Integration with the heterogeneous execution graph.
+
+Actual supported operations and accelerator execution paths must be verified against the implementation and tests. A declared backend or abstraction does not by itself establish that every operation executes natively on that device.
+
+### Phase 17 — Native HydroXL Inference Engine
+
+Introduced HydroXL as a native inference-engine subsystem within HeteroAccel.
+
+The objective is to establish an engine that can progressively use HeteroAccel's native execution infrastructure, rather than relying exclusively on external inference engines.
+
+The Phase 17 development history includes the HydroXL inference-engine implementation and subsequent dequantization-related changes.
+
+HydroXL should be evaluated based on its implemented model support, tensor operations, quantization and dequantization correctness, execution paths, numerical accuracy, memory behavior, and reproducible performance measurements.
+
+Phase 17 establishes a foundation for continued development. It should not be interpreted as proof of complete compatibility with all GGUF models, all quantization formats, every transformer architecture, or every available accelerator.
+
+---
+
+## HydroXL
+
+HydroXL is the native inference-engine subsystem being developed alongside the HeteroAccel runtime.
+
+The intended division of responsibility is:
+
+- **HeteroAccel:** Hardware awareness, capability analysis, execution planning, resource management, residency, scheduling, and orchestration.
+- **HydroXL:** Native inference execution and the engine-specific operations needed to run supported models.
+- **External engines:** Optional integrations that can provide alternative execution implementations where useful.
+
+Keeping these responsibilities separate allows the runtime to evolve independently from the inference engine.
+
+### HydroXL Development Priorities
+
+Future development should prioritize:
+
+1. Correct tensor layouts and numerical operations.
+2. Correct dequantization and quantized-weight handling for explicitly supported formats.
+3. Reliable execution of supported model architectures.
+4. Memory-efficient weight and activation handling.
+5. Integration with HeteroAccel's execution planning and residency infrastructure.
+6. Profiling of actual execution time, memory use, and data movement.
+7. Reference-based correctness tests and reproducible benchmarks.
+8. Incremental support for additional operators, model architectures, and backends.
+
+HydroXL's supported capabilities should be documented explicitly as implementation and testing progress.
+
+---
+
+## Hardware and Backend Support
+
+HeteroAccel is designed around hardware-aware execution, but hardware detection, backend availability, and successful inference are separate concerns.
+
+A backend can be detected without supporting every operation required by a particular model. Likewise, a device's reported shared memory is not equivalent to dedicated high-bandwidth VRAM.
+
+### Development Hardware
+
+The development environment has included the following configuration:
+
+- **CPU:** Intel Core i5-1235U
+- **System memory:** Approximately 16 GB
+- **Integrated graphics:** Intel Iris Xe
+- **Dedicated GPU memory:** Approximately 128 MB reported
+- **Shared graphics memory:** Approximately 8 GB reported
+- **Vulkan:** Available in the reported development environment
+- **CUDA:** Not available on the reported Intel-only machine
+
+These details describe the development machine, not a universal minimum or maximum hardware requirement.
+
+### Backend Verification
+
+Before describing a backend as supported for a workload, verify:
+
+- The backend is detected correctly.
+- The relevant device and execution capabilities are available.
+- The required operations are implemented.
+- The model can execute correctly.
+- Results are numerically validated.
+- Performance and memory use are measured.
+
+CUDA support requires a compatible NVIDIA GPU, drivers, toolkit or runtime dependencies, and a working CUDA backend implementation. It cannot be demonstrated on the reported Intel-only development machine.
+
+Vulkan availability alone does not guarantee that the entire inference workload executes on the GPU.
+
+---
+
+## Requirements
+
+The exact dependencies depend on the current source tree and build configuration. The development environment has included:
+
+- Windows 10/11
+- CMake
+- Visual Studio Build Tools and a compatible MSVC compiler
+- Git
+- Vulkan SDK for Vulkan-enabled builds
+- The dependencies required by the selected inference engine and backend
+
+A GGUF model is needed for model-analysis and inference workflows that use GGUF.
+
+Example model path used during development:
 
 ```text
 C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
 ```
 
-#### Step 4 — Run a Local Prompt
-
-```bash
-adaptive-gpu run <model.gguf> "Explain what heterogeneous computing is."
-```
-
-Example:
-
-```bash
-adaptive-gpu run C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf "Explain heterogeneous computing."
-```
-
-This gives you an actual local LLM inference workload passing through:
-
-```text
-CLI
- ↓
-HeteroAccel
- ↓
-LlamaCppBackend
- ↓
-llama.cpp
- ↓
-CPU / Vulkan
-```
-
-#### Step 5 — Run Interactive Chat
-
-```bash
-adaptive-gpu chat <model.gguf>
-```
-
-For example:
-
-```bash
-adaptive-gpu chat C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-```
-
-You can then interact with the local model through the HeteroAccel runtime.
-
-#### Step 6 — Inspect Runtime Status
-
-```bash
-adaptive-gpu status
-```
-
-This allows you to inspect runtime/hardware information exposed by HeteroAccel.
-
-#### Step 7 — Inspect Workloads
-
-```bash
-adaptive-gpu workloads
-```
-
-This displays workloads tracked by the current process instance.
-
-It is primarily useful for observing the runtime's workload-management system.
-
-#### Step 8 — Inspect Profiling Information
-
-```bash
-adaptive-gpu profile --show
-```
-
-This exposes the performance profile information collected by HeteroAccel.
+This is an example path, not a model bundled with the repository.
 
 ---
 
-## Testing CPU vs GPU/Vulkan Execution
+## Build Instructions
 
-One of the simplest demonstrations of HeteroAccel is comparing the same model under different execution configurations.
+The following is a general Windows build workflow. Verify the actual CMake targets and configuration options in the current repository before running it.
 
-### CPU Mode
+### 1. Clone the repository
 
-Use:
-
-```text
-n_gpu_layers = 0
+```powershell
+git clone https://github.com/Deep455-16/HeteroAccel.git
+cd HeteroAccel
 ```
 
-The model executes through the CPU path.
+If the repository is already present locally:
 
-### Vulkan Mode
-
-Use a configuration with GPU layers enabled, for example:
-
-```text
-n_gpu_layers = 99
+```powershell
+cd C:\Users\rav62\Downloads\adaptive-gpu-runtime
+git status
+git pull
 ```
 
-when supported by the model/hardware configuration.
+Review local changes before pulling or switching branches.
 
-On a Vulkan-capable system, HeteroAccel can therefore execute through the Vulkan path.
+### 2. Configure the project
 
-You can compare:
-
-```text
-CPU
- ↓
-tokens/sec
-latency
-memory
+```powershell
+cmake -S . -B build
 ```
 
-against:
+Add backend-specific configuration flags only when they are defined by the project's current CMake configuration.
 
-```text
-Vulkan
- ↓
-tokens/sec
-latency
-memory
+### 3. Build
+
+```powershell
+cmake --build build --config Release
 ```
 
-This is currently one of the most direct demonstrations of HeteroAccel's adaptive execution concept.
+### 4. Run tests
+
+```powershell
+ctest --test-dir build -C Release --output-on-failure
+```
+
+If the build uses a different configuration, generator, or test directory, adjust the commands accordingly.
 
 ---
 
-## How Another Developer Can Use HeteroAccel
+## Running HeteroAccel
 
-A developer does not have to use the CLI.
+The following examples illustrate the intended CLI workflows. Confirm the available commands using the current executable's help output.
 
-The intended architecture allows another application to integrate with the runtime API.
+### View available commands
 
-Conceptually:
-
-```text
-Developer Application
-        ↓
-HeteroAccel Runtime API
-        ↓
-Execution Policy
-        ↓
-Scheduler
-        ↓
-Memory / Residency
-        ↓
-Inference Backend
+```powershell
+adaptive-gpu --help
 ```
 
-The application provides the workload.
+If the executable is not on `PATH`, run it from its actual build output directory.
 
-HeteroAccel handles the hardware/runtime decisions.
+### Analyze a model
 
-This makes HeteroAccel suitable as an infrastructure layer underneath other local AI software.
+```powershell
+adaptive-gpu analyze "C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+```
+
+This workflow is intended to inspect the model and report relevant requirements and capability information.
+
+### Generate an execution plan
+
+```powershell
+adaptive-gpu plan "C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+```
+
+This workflow is intended to generate an execution plan based on the model and the detected environment.
+
+### Run inference
+
+The runtime has included an inference workflow in the form:
+
+```powershell
+adaptive-gpu run
+```
+
+The exact arguments and model configuration depend on the current CLI implementation. Consult `adaptive-gpu --help` for the supported syntax.
+
+### Chat
+
+The runtime has also included a chat workflow in the form:
+
+```powershell
+adaptive-gpu chat
+```
+
+Use the model-selection and runtime options exposed by the current CLI.
+
+### Configure the model path
+
+The development workflow has used the following environment variable:
+
+```powershell
+$env:HETEROACCEL_MODEL_PATH = "C:\HeteroAccel\Models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+```
+
+This setting is relevant only to workflows that read this environment variable.
 
 ---
 
-## Who Can Use HeteroAccel?
+## Testing and Validation
 
-### Students
+Testing is essential because runtime abstractions, planning decisions, and backend detection do not automatically guarantee correct inference.
 
-Students can use HeteroAccel to:
+Validation should cover the following areas.
 
-* run local GGUF models
-* experiment with CPU/GPU inference
-* study heterogeneous computing
-* study adaptive scheduling
-* study memory management
-* benchmark local inference
+### Unit Tests
 
-The CLI is the simplest entry point.
+- Resource and memory-management behavior.
+- Scheduling and execution policies.
+- Model metadata inspection.
+- Capability-analysis decisions.
+- Execution-plan construction.
+- Residency and eviction behavior.
+- Tensor and buffer operations.
+- HydroXL numerical operations.
+- Error handling and cancellation.
 
-### AI/ML Developers
+### Integration Tests
 
-AI developers can integrate HeteroAccel underneath a local inference application.
+- Engine registration and lifecycle.
+- Runtime-to-engine communication.
+- Planner-to-residency integration.
+- Execution-graph integration.
+- Model loading and supported inference workflows.
+- Backend selection and fallback behavior.
 
-Example:
+### Numerical Correctness
 
-```text
-Local AI Application
-        ↓
-HeteroAccel
-        ↓
-llama.cpp
-        ↓
-Local Hardware
+For supported operations and models, compare outputs with a trusted reference implementation where possible. Include edge cases, supported quantization formats, boundary values, and tolerances appropriate to the operation.
+
+### Performance Validation
+
+Record reproducible measurements, including:
+
+- Time to first token (TTFT).
+- Tokens generated per second.
+- Model loading time.
+- Peak memory usage.
+- CPU and GPU utilization where measurable.
+- Data-transfer and streaming overhead.
+- Performance under memory pressure.
+
+Performance claims should include the hardware, model, quantization, backend, prompt and generation settings, and benchmark procedure.
+
+### Test Reporting
+
+Always obtain the current result from the repository rather than reusing a historical test count.
+
+```powershell
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-This can reduce the amount of hardware-specific execution logic that the application itself needs to manage.
-
-### AI Application Developers
-
-Applications such as:
-
-* local AI assistants
-* RAG systems
-* AI coding tools
-* AI IDEs
-* autonomous agents
-* VLM/VLA applications
-
-can potentially use HeteroAccel as their local execution layer.
-
-The application remains responsible for its own functionality.
-
-HeteroAccel remains responsible for hardware/resource execution.
-
-### Researchers
-
-Researchers can use HeteroAccel to investigate:
-
-* heterogeneous scheduling
-* CPU/GPU execution
-* memory pressure
-* adaptive inference
-* performance profiling
-* runtime autotuning
-* local AI execution
-
-The runtime also provides a foundation for future benchmarking and research experiments.
-
-### Developers Building Inference Engines
-
-Future inference engines can potentially use HeteroAccel as a hardware/resource orchestration layer.
-
-For example:
-
-```text
-Colibrì
-  ↓
-HeteroAccel
-  ↓
-CPU / GPU / RAM / NVMe
-```
-
-In this architecture:
-
-**Colibrì answers:**
-
-> How should this model be executed?
-
-**HeteroAccel answers:**
-
-> Given this machine and its current resources, how should the available hardware and memory be used to execute that workload?
-
-This separation keeps the inference engine and hardware runtime independently reusable.
+Document skipped tests separately from passing tests and explain any missing model files, optional dependencies, or unavailable hardware that prevent execution.
 
 ---
 
-## Using HeteroAccel as the Runtime / "Code Processor"
+## Design Principles
 
-HeteroAccel should not be described as a compiler or a traditional source-code processor.
+### Modularity
 
-Its role is better understood as an **execution processor/runtime layer**.
+Runtime orchestration, execution primitives, and inference engines should have distinct responsibilities.
 
-For an application, the flow is:
+### Capability-Driven Execution
 
-```text
-Application
-     ↓
-Create workload
-     ↓
-HeteroAccel evaluates:
-     ├── Hardware
-     ├── Memory
-     ├── Workload
-     ├── Historical performance
-     └── Execution constraints
-     ↓
-Execution Policy
-     ↓
-Scheduler
-     ↓
-Backend
-     ↓
-Actual computation
-```
+Execution decisions should be based on detected capabilities and verified support, not assumptions about a device or backend.
 
-Therefore, an application developer does not need to manually write:
+### Explicit Failure Handling
 
-```text
-if NVIDIA:
-    use CUDA
+Unsupported operations, resource exhaustion, invalid inputs, and backend failures should produce clear errors or documented fallback behavior.
 
-elif Intel Vulkan:
-    use Vulkan
+### Measurable Performance
 
-elif CPU:
-    use CPU
-```
+Optimization decisions should be informed by reproducible measurements rather than unverified speedup claims.
 
-for every application-level workload.
+### Incremental Compatibility
 
-Instead, the application can target the HeteroAccel runtime interface, while HeteroAccel handles the supported hardware-specific execution path underneath.
+Support for new model architectures, quantization formats, and hardware backends should be added and tested incrementally.
+
+### Honest Capability Reporting
+
+The project should clearly distinguish implemented functionality, tested functionality, experimental features, and planned capabilities.
 
 ---
 
-## Example: Building an AI IDE on HeteroAccel
+## Current Limitations
 
-A future AI IDE could look like:
+HeteroAccel is an actively developed runtime. The following limitations should be considered when evaluating the project:
 
-```text
-┌───────────────────────────────┐
-│            AI IDE             │
-│                               │
-│ Code editor                   │
-│ Chat                          │
-│ Agent                         │
-│ RAG                           │
-└───────────────┬───────────────┘
-                ↓
-        Inference Engine
-                ↓
-           HeteroAccel
-                ↓
-     CPU / GPU / Memory
-```
+- Model compatibility depends on the implemented inspection and execution paths.
+- Model analysis and execution planning are not guarantees of successful inference.
+- Streaming reduces the need to keep all model data resident, but it does not remove compute or memory-bandwidth constraints.
+- Vulkan availability does not establish full GPU inference support.
+- CUDA execution requires compatible NVIDIA hardware and a functioning CUDA backend.
+- HydroXL's supported architectures, quantization formats, operators, and inference workflows must be verified against the current implementation.
+- External engine integrations require adapters and compatibility testing.
+- Dynamic plugin loading, a stable public SDK, and production packaging are separate deliverables and should not be assumed complete merely because an engine registry exists.
 
-The IDE does not need to become responsible for:
-
-* detecting every GPU
-* monitoring memory pressure
-* deciding GPU-layer limits
-* maintaining performance history
-* managing execution policy
-* implementing workload cancellation
-* implementing hardware-specific scheduling
-
-Those concerns belong to the runtime layer.
+The project should be described according to verified implementation and test results rather than its long-term goals.
 
 ---
 
-## Example: Building a Local RAG System
+## Roadmap
 
-A local RAG application could use:
+The roadmap below identifies planned work beyond Phase 17. These are future development objectives, not claims of completed functionality.
 
-```text
-Documents
-   ↓
-Local RAG Database
-   ↓
-Retrieval
-   ↓
-Inference Engine
-   ↓
-HeteroAccel
-   ↓
-Local Hardware
-```
+### Phase 18 — Dynamic Engine Plugin System and SDK
 
-HeteroAccel does not perform the retrieval itself.
+Planned work:
 
-Instead, once the RAG system has generated an inference workload, HeteroAccel can provide the adaptive execution layer underneath the inference engine.
+- Define a versioned engine-plugin interface or ABI.
+- Specify engine capability declarations.
+- Implement plugin discovery, loading, initialization, and shutdown.
+- Validate plugin and runtime compatibility.
+- Handle plugin failures and lifecycle errors safely.
+- Provide a minimal example plugin and integration tests.
+- Document the SDK and compatibility expectations.
 
----
+A registry of engine implementations is not, by itself, a complete dynamic plugin-loading system.
 
-## Example: Building an Agent System
+### Phase 19 — External Engine Integrations
 
-A local agent can use:
+Planned work:
 
-```text
-User
- ↓
-Agent
- ├── Tools
- ├── Memory
- ├── RAG
- └── Inference Engine
-          ↓
-      HeteroAccel
-          ↓
-      Hardware
-```
+- Evaluate external inference engines for compatibility with HeteroAccel.
+- Implement adapters where appropriate.
+- Keep optional dependencies separate from the runtime core.
+- Define capability mappings and execution-context conversion.
+- Validate model support, resource behavior, correctness, and performance.
+- Document limitations and integration requirements for each engine.
 
-The agent decides **what to do**.
+Potential candidates include Colibrì and AirLLM, subject to compatibility and feasibility assessment. Neither should be represented as integrated until a working adapter has been implemented and tested.
 
-The inference engine decides **how the model computes**.
+### Phase 20 — HydroXL Maturation and Optimization
 
-HeteroAccel decides **how the available local execution resources should be managed**.
+Planned work:
 
----
+- Expand verified model and operator support.
+- Improve numerical correctness and quantization handling.
+- Optimize memory allocation and tensor operations.
+- Improve execution-graph integration.
+- Evaluate supported CPU and accelerator execution paths.
+- Establish repeatable performance benchmarks.
+- Document supported model architectures and quantization formats.
 
-## Future Colibrì Integration
+### Beyond Phase 20
 
-HeteroAccel is intentionally designed so that a future inference engine such as Colibrì does not require a completely different hardware-management system.
+Potential follow-on work includes:
 
-The intended architecture is:
+- A stable public application-facing API.
+- Packaging, installation, and release automation.
+- Reproducible benchmarking across hardware configurations.
+- Broader backend coverage.
+- Developer documentation and example applications.
+- Compatibility guarantees and release testing.
 
-```text
-AI Applications
-       ↓
-     Colibrì
-       ↓
-  HeteroAccel
-       ↓
-CPU / GPU / NPU / RAM / NVMe
-```
-
-The important principle is:
-
-> **Do not modify HeteroAccel simply because a new application exists.**
-
-Instead:
-
-1. Build the application/inference engine.
-2. Integrate it with the existing HeteroAccel runtime.
-3. Identify any genuinely missing generic runtime capability.
-4. Add that capability to HeteroAccel only if it is reusable across workloads.
-5. All future applications can then benefit from the same capability.
-
-This prevents HeteroAccel from becoming permanently coupled to one AI application.
+These items should receive explicit scope, implementation milestones, and acceptance criteria before being described as completed phases.
 
 ---
 
-## What HeteroAccel Can and Cannot Do Today
+## Contributing
 
-### Currently Supported
+Contributions should focus on correctness, clear interfaces, reproducible tests, and well-documented behavior.
 
-* Hardware detection
-* CPU execution
-* Vulkan execution
-* CUDA architecture/support where available
-* llama.cpp integration
-* GPU-layer configuration
-* Adaptive scheduling
-* Memory pressure management
-* Resource residency abstractions
-* Streaming/prefetch infrastructure
-* Performance profiling
-* Historical performance tracking
-* Auto-tuning
-* Execution policies
-* Workload tracking
-* Workload cancellation
-* Safe fallback behavior
-* Local GGUF inference
-* CLI-based testing
-* Developer runtime integration
+Before submitting changes:
 
-### Not Currently Claimed
+1. Build the project using the documented configuration.
+2. Run the relevant unit and integration tests.
+3. Add regression tests for bug fixes.
+4. Document new commands, configuration options, and supported capabilities.
+5. Avoid claiming support for untested models, operators, or backends.
+6. Include benchmark methodology when reporting performance improvements.
 
-HeteroAccel does **not** currently claim to:
-
-* make a multi-trillion-parameter model run on any laptop automatically
-* provide arbitrary per-tensor placement inside llama.cpp
-* perform arbitrary mid-generation tensor migration
-* guarantee identical performance across different hardware
-* replace an inference engine
-* replace an operating system
-* automatically make every existing AI application use HeteroAccel
-* provide a complete end-user AI application by itself
-
-These capabilities may require future integration with inference engines and additional runtime capabilities.
+For larger changes, first document the intended architecture and acceptance criteria, then implement and validate the change incrementally.
 
 ---
 
-## Recommended Current Demonstration
+## Project Links
 
-The simplest demonstration of the current project is:
-
-```text
-1. Clone HeteroAccel
-        ↓
-2. Build Release
-        ↓
-3. Run 58 tests
-        ↓
-4. Provide a GGUF model
-        ↓
-5. Run:
-   adaptive-gpu run <model.gguf> "Hello"
-        ↓
-6. Run interactive chat
-        ↓
-7. Inspect status
-        ↓
-8. Inspect profiling
-        ↓
-9. Compare CPU and Vulkan execution
-```
-
-This demonstrates the current system without requiring a future application such as Colibrì.
+- **GitHub Repository:** https://github.com/Deep455-16/HeteroAccel
+- **Current Development Scope:** Phases 1–17
+- **Native Inference Subsystem:** HydroXL
+- **Next Planned Milestone:** Phase 18 — Dynamic Engine Plugin System and SDK
 
 ---
 
-## Architecture Philosophy
+## Closing Note
 
-HeteroAccel follows one central design principle:
+HeteroAccel aims to provide a modular, hardware-aware foundation for local AI inference. Through Phase 17, its development has progressed from hardware detection and runtime scheduling to execution planning, model residency, heterogeneous execution infrastructure, native execution primitives, and the introduction of HydroXL.
 
-> **Applications should describe workloads; the runtime should manage heterogeneous execution.**
-
-The application should focus on:
-
-```text
-What does the user want?
-```
-
-The inference engine should focus on:
-
-```text
-How is the model executed?
-```
-
-HeteroAccel should focus on:
-
-```text
-How should the available local hardware and resources
-be managed to execute that workload efficiently and safely?
-```
-
-This separation allows HeteroAccel to become a reusable infrastructure layer for multiple local AI systems rather than a component tied to a single application.
-
----
-
-## Building and Testing
-
-Requirements:
-
-* CMake 3.20+
-* C++17
-* MSVC, GCC, or Clang
-* Vulkan SDK for Vulkan execution/testing
-* CUDA toolkit/driver environment for CUDA execution where applicable
-* GGUF model for end-to-end LLM tests
-
-Build:
-
-```bash
-mkdir build
-cd build
-cmake ..
-cmake --build . --config Release -j 4
-```
-
-Run tests:
-
-```bash
-ctest -C Release --output-on-failure
-```
-
-Current validated result:
-
-```text
-58/58 tests passed
-0 failed
-0 skipped
-```
-
----
-
-## Project Status
-
-**Current status: Phase 10 complete.**
-
-HeteroAccel is currently a functional developer-stage adaptive local inference runtime with real llama.cpp integration.
-
-The next stage is not another mandatory HeteroAccel phase.
-
-Instead, the runtime can now be used as infrastructure for:
-
-* local AI applications
-* local RAG systems
-* AI coding tools
-* AI IDEs
-* agent systems
-* future inference engines such as Colibrì
-* heterogeneous-computing research and benchmarking
-
-HeteroAccel should only be extended when a future workload exposes a **generic execution capability that the runtime genuinely does not yet provide**.
-
----
-
+The next priority is to strengthen correctness, verify supported workloads, establish reproducible benchmarks, and expand the runtime through clearly defined interfaces. The project's maturity should ultimately be demonstrated through working implementations, repeatable tests, and measured results on real hardware.
