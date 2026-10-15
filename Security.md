@@ -2,31 +2,38 @@
 
 ## Overview
 
-HeteroAccel is a local, hardware-adaptive runtime for AI inference. It is designed to operate primarily on the user's local machine and interact with local inference engines, models, memory, storage, and hardware accelerators.
+HeteroAccel is a local, hardware-adaptive runtime for AI inference. Through Phase 17, its architecture includes hardware and backend abstractions, resource management and scheduling, model inspection and execution planning, model residency and streaming, a heterogeneous execution graph, native execution primitives, and the HydroXL native inference-engine subsystem.
 
-Security is an important part of the project because HeteroAccel may operate with:
+It is designed primarily for local execution and may interact with local inference engines, models, memory, storage, and hardware accelerators. Security properties depend on the implemented code, enabled backends, dependencies, and the host environment.
 
-* Local AI models
-* User prompts and generated content
-* Local files and model paths
-* System memory and storage
-* CPU and GPU resources
-* Hardware and runtime configuration
-* Local inference processes
+Security is important because HeteroAccel may operate with:
 
-This document explains how security vulnerabilities should be reported and the security practices currently followed by the project.
+- Local AI models
+- User prompts and generated content
+- Local files and model paths
+- System memory and storage
+- CPU and GPU resources
+- Hardware and runtime configuration
+- Local inference processes
+- Model inspection and execution planning
+- Model residency, streaming, prefetching, and eviction
+- Heterogeneous execution graphs and native tensor/buffer operations
+- HydroXL native inference-engine code and dequantization routines
+- Future engine plugins or external adapters, if and when implemented
+
+This document explains how security vulnerabilities should be reported and describes security-oriented design expectations for the project. It is not a certification that every listed mitigation is implemented or that the runtime has undergone a formal security audit.
 
 ---
 
 ## Supported Versions
 
-Security fixes are primarily applied to the latest development version of HeteroAccel.
+Security fixes are primarily expected to be developed against the latest maintained version of HeteroAccel. Actual support status depends on the maintainers and the project's release practices.
 
-| Version               | Supported      |
-| --------------------- | -------------- |
-| Latest `main`         | ✅ Yes          |
-| Older releases        | ⚠️ Best effort |
-| Unmaintained versions | ❌ No           |
+| Version | Supported |
+|---|---|
+| Latest `main` | Yes |
+| Older releases | Best effort |
+| Unmaintained versions | No |
 
 Users are encouraged to keep HeteroAccel updated to the latest available version.
 
@@ -34,22 +41,22 @@ Users are encouraged to keep HeteroAccel updated to the latest available version
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in HeteroAccel, please **do not disclose the vulnerability publicly through a GitHub issue, pull request, discussion, or public forum before it has been investigated**.
+If you discover a security vulnerability in HeteroAccel, **do not disclose the vulnerability publicly through a GitHub issue, pull request, discussion, or public forum before it has been investigated.**
 
-Instead, report the vulnerability privately through the security contact or private vulnerability-reporting mechanism associated with the repository.
+Use GitHub's private vulnerability reporting feature for the repository if it is enabled, or contact the maintainers through a verified private security contact. Do not assume a private reporting feature is enabled unless it is visible on the repository. If no private channel is available, request a secure reporting route without posting exploit details publicly.
 
 When reporting a vulnerability, please provide as much of the following information as possible:
 
-* A clear description of the vulnerability
-* The affected HeteroAccel version or commit
-* The operating system and architecture
-* Hardware configuration, if relevant
-* Steps required to reproduce the issue
-* A minimal proof of concept, if available
-* Expected behavior
-* Actual behavior
-* Potential security impact
-* Any proposed mitigation or fix
+- A clear description of the vulnerability
+- The affected HeteroAccel version or commit
+- The operating system and architecture
+- Hardware configuration, if relevant
+- Steps required to reproduce the issue
+- A minimal proof of concept, if available
+- Expected behavior
+- Actual behavior
+- Potential security impact
+- Any proposed mitigation or fix
 
 Please avoid including real credentials, API keys, private documents, personal information, or other sensitive data in the report.
 
@@ -61,42 +68,42 @@ Security issues may include, but are not limited to:
 
 ### Code Execution
 
-* Unexpected execution of arbitrary code
-* Unsafe command execution
-* Malicious model or input leading to unintended code execution
-* Memory corruption resulting in code execution
+- Unexpected execution of arbitrary code
+- Unsafe command execution
+- Malicious model or input leading to unintended code execution
+- Memory corruption resulting in code execution
 
 ### Memory Safety
 
-* Buffer overflows
-* Use-after-free
-* Out-of-bounds access
-* Double-free conditions
-* Invalid pointer usage
-* Integer overflow/underflow that can affect memory safety
+- Buffer overflows
+- Use-after-free
+- Out-of-bounds access
+- Double-free conditions
+- Invalid pointer usage
+- Integer overflow or underflow affecting memory safety
 
 ### File and Path Security
 
-* Path traversal
-* Unauthorized file access
-* Unsafe handling of model paths
-* Arbitrary file overwrite or deletion
-* Unsafe temporary-file handling
+- Path traversal
+- Unauthorized file access
+- Unsafe handling of model paths
+- Arbitrary file overwrite or deletion
+- Unsafe temporary-file handling
 
 ### Resource Exhaustion
 
-* Uncontrolled memory allocation
-* CPU exhaustion
-* GPU resource exhaustion
-* Disk-space exhaustion
-* Denial-of-service conditions caused by malicious workloads or inputs
+- Uncontrolled memory allocation
+- CPU exhaustion
+- GPU resource exhaustion
+- Disk-space exhaustion
+- Denial-of-service conditions caused by malicious workloads or inputs
 
 ### Process and Runtime Isolation
 
-* Unauthorized interaction with other processes
-* Privilege escalation
-* Unsafe subprocess handling
-* Unexpected access to system resources
+- Unauthorized interaction with other processes
+- Privilege escalation
+- Unsafe subprocess handling
+- Unexpected access to system resources
 
 ### Dependency Vulnerabilities
 
@@ -104,37 +111,31 @@ Security vulnerabilities originating from dependencies used by HeteroAccel may a
 
 This includes vulnerabilities affecting components such as:
 
-* llama.cpp
-* Vulkan-related components
-* CUDA-related components
-* CMake/build dependencies
-* Other third-party runtime libraries
+- `llama.cpp`
+- Vulkan-related components
+- CUDA-related components
+- CMake and build dependencies
+- Other third-party runtime libraries
 
 ---
 
 ## Model and Input Security
 
-HeteroAccel executes local AI workloads and therefore should not automatically be considered safe simply because a model is stored locally.
+HeteroAccel can execute local AI workloads through engine integrations and native HydroXL execution paths. A model must not be considered safe merely because it is stored locally or uses a supported file format.
 
-Users should obtain models from trusted sources.
+Users should obtain models from trusted sources. A malicious or intentionally modified model may potentially exploit vulnerabilities in the inference engine or underlying dependencies.
 
-A malicious or intentionally modified model may potentially exploit vulnerabilities in the inference engine or underlying dependencies.
-
-HeteroAccel does not currently claim to provide comprehensive security validation or sandboxing of arbitrary model files.
-
-Users should therefore treat untrusted models as potentially unsafe input.
+HeteroAccel does not claim to provide comprehensive security validation, memory-safe parsing, or sandboxing of arbitrary model files. Treat untrusted model files as potentially hostile input and use operating-system-level isolation where appropriate.
 
 ---
 
 ## Local Data and Privacy
 
-HeteroAccel is designed for local execution.
+HeteroAccel is intended to support local execution and is not inherently a remote inference service. Whether prompts, models, telemetry, or other data leave the machine depends on the application, selected engine, optional integrations, and any external services they use.
 
-Under normal local execution, prompts, models, and inference data are intended to remain on the user's machine rather than being sent to a remote HeteroAccel service.
+Verify the behavior of the complete stack rather than assuming that local runtime use guarantees offline operation.
 
-However, privacy depends on the complete application and inference stack being used.
-
-For example:
+A typical local execution architecture may look like this:
 
 ```text
 Application
@@ -146,7 +147,7 @@ HeteroAccel
 Local Hardware
 ```
 
-If the application itself communicates with external services, HeteroAccel cannot guarantee that those external communications are private.
+If the application or an integrated engine communicates with external services, HeteroAccel cannot guarantee that those external communications are private.
 
 HeteroAccel should therefore be considered a **local runtime component**, not a guarantee that every application using it is completely offline.
 
@@ -158,13 +159,13 @@ Secrets should not be committed to the repository.
 
 This includes:
 
-* API keys
-* Access tokens
-* Passwords
-* Private keys
-* Cloud credentials
-* Authentication tokens
-* Personal credentials
+- API keys
+- Access tokens
+- Passwords
+- Private keys
+- Cloud credentials
+- Authentication tokens
+- Personal credentials
 
 Developers should use environment variables or an appropriate local secret-management mechanism where credentials are required by an integrating application.
 
@@ -178,24 +179,25 @@ HeteroAccel relies on third-party components and platform runtimes.
 
 Developers should:
 
-* Keep dependencies reasonably up to date
-* Use trusted package and dependency sources
-* Review dependency security advisories
-* Avoid committing generated binaries unnecessarily
-* Avoid committing credentials or private configuration
-* Build from trusted source code
-* Review changes to security-sensitive dependencies
+- Keep dependencies reasonably up to date
+- Use trusted package and dependency sources
+- Review dependency security advisories
+- Avoid committing generated binaries unnecessarily
+- Avoid committing credentials or private configuration
+- Build from trusted source code
+- Review changes to security-sensitive dependencies
 
 Particular attention should be given to changes involving:
 
-* llama.cpp
-* memory management
-* filesystem operations
-* process execution
-* backend loading
-* Vulkan/CUDA integration
-* model loading
-* serialization/deserialization
+- `llama.cpp` and other inference-engine code
+- HydroXL tensor operations, dequantization, and model parsing
+- Memory management and tensor/buffer lifetimes
+- Model residency, streaming, prefetching, and eviction
+- Filesystem operations and model paths
+- Process execution and plugin loading
+- Backend selection and Vulkan/CUDA integration
+- Execution-graph scheduling, cancellation, and error handling
+- Serialization and deserialization
 
 ---
 
@@ -207,7 +209,7 @@ HeteroAccel follows several security-oriented design principles.
 
 HeteroAccel should operate with the minimum operating-system privileges required by the application.
 
-It should not require administrator/root privileges for normal local inference operation unless a specific platform integration requires them.
+It should not require administrator or root privileges for normal local inference operation unless a specific platform integration requires them.
 
 ### Explicit Resource Management
 
@@ -219,13 +221,13 @@ Runtime configuration and externally supplied parameters should be validated bef
 
 This includes values related to:
 
-* Context size
-* Batch size
-* Token limits
-* GPU-layer configuration
-* Thread configuration
-* Model paths
-* Resource sizes
+- Context size
+- Batch size
+- Token limits
+- GPU-layer configuration
+- Thread configuration
+- Model paths
+- Resource sizes
 
 ### Safe Failure
 
@@ -245,21 +247,43 @@ Restricted / CPU Fallback
 
 Workload cancellation should terminate execution through controlled runtime mechanisms rather than abruptly terminating the entire process.
 
+### Model Residency, Streaming, and Native Execution
+
+Model-region extraction, file-backed reads, prefetching, eviction, tensor allocation, and native dequantization are security-sensitive operations.
+
+Implementations should:
+
+- Validate file offsets and data sizes.
+- Check integer arithmetic for overflow.
+- Handle short reads and I/O errors.
+- Enforce appropriate resource limits.
+- Maintain clear ownership and lifetime rules.
+
+These are security requirements to verify in code and tests, not assumptions that every path is already hardened.
+
+### Execution Graphs and Engine Boundaries
+
+Execution-graph dependencies, cancellation, backend transfers, and engine lifecycle transitions should be validated.
+
+A common engine interface or registry does not provide process isolation. Do not load or execute untrusted native plugins in the main process. Dynamic plugin support is a separate capability and should include an explicit trust model and compatibility checks if implemented.
+
 ---
 
 ## Hardware Backend Security
 
-HeteroAccel can interact with different hardware backends, including CPU, Vulkan, and CUDA where available.
+HeteroAccel's architecture includes backend abstractions for CPU and supported accelerator paths, including Vulkan or CUDA where available and implemented.
 
-Security properties may therefore depend on:
+Detection of a backend does not establish that every operation, model, or execution-graph node is supported by it.
 
-* Operating-system security
-* GPU drivers
-* Vulkan runtime/loader
-* CUDA drivers/toolkit
-* CPU architecture
-* Backend implementation
-* Inference engine implementation
+Security properties may depend on:
+
+- Operating-system security
+- GPU drivers
+- Vulkan runtime and loader
+- CUDA drivers and toolkit
+- CPU architecture
+- Backend implementation
+- Inference-engine implementation
 
 HeteroAccel does not replace the security mechanisms provided by these underlying platforms.
 
@@ -269,9 +293,11 @@ Users should keep their operating system and hardware drivers reasonably up to d
 
 ## Third-Party Dependencies
 
-HeteroAccel integrates with external projects such as `llama.cpp` and hardware-specific runtime components.
+HeteroAccel has included integration with `llama.cpp` and hardware-specific runtime components. HydroXL is the native inference-engine subsystem introduced in Phase 17.
 
-A vulnerability in a third-party dependency may affect HeteroAccel even when the HeteroAccel code itself is not directly responsible for the vulnerability.
+Future dynamic plugin loading and optional external-engine adapters are separate roadmap items unless verified as implemented in the current checkout.
+
+A vulnerability in a third-party dependency may affect HeteroAccel even when the HeteroAccel code itself is not directly responsible.
 
 When a relevant upstream vulnerability is identified, the project should evaluate:
 
@@ -312,18 +338,21 @@ Researchers who responsibly report valid vulnerabilities are appreciated and wil
 
 ## Security Limitations
 
-HeteroAccel is currently a developer-stage runtime and should not be considered a security boundary or sandbox.
+HeteroAccel remains a developing runtime, including its native execution and HydroXL components, and should not be considered a security boundary or sandbox.
+
+The architecture's abstractions and roadmap do not by themselves establish that all security controls have been implemented, audited, or tested.
 
 In particular, HeteroAccel does not currently guarantee:
 
-* Complete sandboxing of models
-* Complete isolation from the host operating system
-* Protection against malicious inference-engine code
-* Protection against compromised GPU drivers
-* Protection against compromised dependencies
-* Formal verification of memory safety
-* Security isolation between arbitrary workloads
-* Protection against every possible denial-of-service condition
+- Complete sandboxing or security validation of model files
+- Complete isolation from the host operating system
+- Protection against malicious inference-engine or native HydroXL code
+- A verified security boundary between execution-graph nodes or workloads
+- Protection against compromised GPU drivers
+- Protection against compromised dependencies
+- Formal verification of memory safety
+- Security isolation between arbitrary workloads
+- Protection against every possible denial-of-service condition
 
 Applications requiring strong isolation should use appropriate operating-system, container, virtual-machine, or sandboxing mechanisms in addition to HeteroAccel.
 
@@ -333,15 +362,15 @@ Applications requiring strong isolation should use appropriate operating-system,
 
 Users should:
 
-* Keep HeteroAccel updated
-* Use trusted model sources
-* Keep operating-system updates enabled
-* Keep GPU drivers updated
-* Avoid running untrusted binaries
-* Avoid running HeteroAccel with unnecessary administrator privileges
-* Protect local model and application files
-* Never commit credentials to the repository
-* Review third-party dependencies when building from source
+- Keep HeteroAccel updated
+- Use trusted model sources
+- Keep operating-system updates enabled
+- Keep GPU drivers updated
+- Avoid running untrusted binaries
+- Avoid running HeteroAccel with unnecessary administrator privileges
+- Protect local model and application files
+- Never commit credentials to the repository
+- Review third-party dependencies when building from source
 
 For sensitive workloads, users should also consider operating-system-level isolation and filesystem permissions.
 
@@ -351,16 +380,16 @@ For sensitive workloads, users should also consider operating-system-level isola
 
 Contributors should:
 
-* Validate externally supplied input
-* Avoid unsafe memory operations
-* Avoid unnecessary elevated privileges
-* Avoid hard-coded credentials
-* Avoid committing secrets
-* Use safe filesystem APIs
-* Handle errors explicitly
-* Prefer RAII and ownership-safe C++ patterns
-* Review changes affecting memory, process, filesystem, and backend operations
-* Add regression tests for security-sensitive fixes
+- Validate externally supplied input
+- Avoid unsafe memory operations
+- Avoid unnecessary elevated privileges
+- Avoid hard-coded credentials
+- Avoid committing secrets
+- Use safe filesystem APIs
+- Handle errors explicitly
+- Prefer RAII and ownership-safe C++ patterns
+- Review changes affecting memory, process, filesystem, and backend operations
+- Add regression tests for security-sensitive fixes
 
 Security-sensitive changes should receive additional review before being merged.
 
@@ -368,19 +397,21 @@ Security-sensitive changes should receive additional review before being merged.
 
 ## Scope
 
-This security policy applies to the HeteroAccel project and its directly maintained runtime code.
+This security policy applies to the HeteroAccel project and its directly maintained runtime code, including model inspection and planning, residency and streaming, execution-graph infrastructure, native execution primitives, and HydroXL code.
+
+The inclusion of a component in this scope does not imply that it has received a formal security audit.
 
 Security issues belonging exclusively to an external dependency should also be reported to the relevant upstream project when appropriate.
 
 Examples include:
 
-* Operating-system vulnerabilities
-* GPU driver vulnerabilities
-* Vulkan loader vulnerabilities
-* CUDA driver/toolkit vulnerabilities
-* llama.cpp vulnerabilities that are independent of HeteroAccel changes
+- Operating-system vulnerabilities
+- GPU driver vulnerabilities
+- Vulkan loader vulnerabilities
+- CUDA driver/toolkit vulnerabilities
+- `llama.cpp` vulnerabilities that are independent of HeteroAccel changes
 
-However, if the vulnerability is exposed or amplified specifically by HeteroAccel's integration with such a dependency, please report it to the HeteroAccel maintainers as well.
+However, if a vulnerability is exposed or amplified specifically by HeteroAccel's integration with such a dependency, please report it to the HeteroAccel maintainers as well.
 
 ---
 
