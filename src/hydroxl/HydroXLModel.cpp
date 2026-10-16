@@ -93,8 +93,8 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
         dequant_f16(raw.data(), out.data(), n_elems);
         break;
     }
-    case GGMLType::Q4_K_S:
-    case GGMLType::Q4_K_M: {
+    case GGMLType::Q4_K:
+    {
         if (n_elems % Q4K_BLOCK_SIZE != 0) {
             last_error_ = "Tensor '" + name + "' n_elems=" + std::to_string(n_elems)
                         + " not divisible by " + std::to_string(Q4K_BLOCK_SIZE);
@@ -124,6 +124,38 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
         }
         if (!dequant_q8_0(raw.data(), out.data(), n_elems)) {
             last_error_ = "Q8_0 dequant failed for tensor '" + name + "'";
+            return false;
+        }
+        break;
+    }
+    case GGMLType::Q6_K: {
+        if (n_elems % 256 != 0) {
+            last_error_ = "Tensor '" + name + "' n_elems not divisible by 256";
+            return false;
+        }
+        std::vector<uint8_t> raw(desc->n_bytes);
+        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
+            last_error_ = "IO error reading tensor '" + name + "' (Q6_K)";
+            return false;
+        }
+        if (!dequant_q6_k(raw.data(), out.data(), n_elems)) {
+            last_error_ = "Q6_K dequant failed for tensor '" + name + "'";
+            return false;
+        }
+        break;
+    }
+    case GGMLType::Q5_0: {
+        if (n_elems % 32 != 0) {
+            last_error_ = "Tensor '" + name + "' n_elems not divisible by 32";
+            return false;
+        }
+        std::vector<uint8_t> raw(desc->n_bytes);
+        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
+            last_error_ = "IO error reading tensor '" + name + "' (Q5_0)";
+            return false;
+        }
+        if (!dequant_q5_0(raw.data(), out.data(), n_elems)) {
+            last_error_ = "Q5_0 dequant failed for tensor '" + name + "'";
             return false;
         }
         break;

@@ -69,6 +69,7 @@ inline const char* toString(GGMLType t) {
         case GGMLType::F32:   return "F32";
         case GGMLType::F16:   return "F16";
         case GGMLType::Q4_0:  return "Q4_0";
+        case GGMLType::Q5_0:  return "Q5_0";
         case GGMLType::Q8_0:  return "Q8_0";
         case GGMLType::Q2_K:  return "Q2_K";
         case GGMLType::Q3_K:  return "Q3_K";

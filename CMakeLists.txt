@@ -99,7 +99,7 @@ if(MSVC AND TARGET ggml)
 endif()
 
 # =============================================================================
-# agr_core — Phase 1 + Phase 2 (unchanged from c3fc2f2)
+# agr_core â€” Phase 1 + Phase 2 (unchanged from c3fc2f2)
 # =============================================================================
 add_library(agr_core STATIC
     src/hardware/CPUDetector.cpp
@@ -143,7 +143,7 @@ endif()
 add_dependencies(agr_core agr_shaders)
 
 # =============================================================================
-# agr_llm — Phase 3: llama.cpp adapter
+# agr_llm â€” Phase 3: llama.cpp adapter
 # =============================================================================
 add_library(agr_llm STATIC
     src/llm/LlamaCppEngine.cpp
@@ -153,7 +153,7 @@ target_include_directories(agr_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_llm PUBLIC agr_core llama)
 
 # =============================================================================
-# agr_mem — Phase 4: Unified Memory Management
+# agr_mem â€” Phase 4: Unified Memory Management
 # =============================================================================
 add_library(agr_mem STATIC
     src/mem/CPUAllocator.cpp
@@ -169,7 +169,7 @@ target_include_directories(agr_mem PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_mem PUBLIC agr_core)
 
 # =============================================================================
-# agr_backend — Phase 4: Automatic Backend Selection
+# agr_backend â€” Phase 4: Automatic Backend Selection
 # CPU, Vulkan, and CUDA are discovered uniformly; the user never chooses.
 # =============================================================================
 add_library(agr_backend STATIC
@@ -181,7 +181,7 @@ target_include_directories(agr_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_backend PUBLIC agr_core agr_mem)
 
 # =============================================================================
-# agr_profiler — Phase 8: Unified Profiling System
+# agr_profiler â€” Phase 8: Unified Profiling System
 # =============================================================================
 add_library(agr_profiler STATIC
     src/profiler/Profiler.cpp
@@ -190,7 +190,7 @@ target_include_directories(agr_profiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_profiler PUBLIC agr_core agr_scheduler)
 
 # =============================================================================
-# agr_scheduler — Phase 5 + 8: Adaptive Scheduler & Auto-Tuning
+# agr_scheduler â€” Phase 5 + 8: Adaptive Scheduler & Auto-Tuning
 # =============================================================================
 add_library(agr_scheduler STATIC
     src/scheduler/PerformanceHistory.cpp
@@ -208,7 +208,7 @@ target_include_directories(agr_scheduler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_scheduler PUBLIC agr_core agr_mem agr_backend)
 
 # =============================================================================
-# agr_model — Phase 6: Model / Layer Manager, Streaming & Prefetch
+# agr_model â€” Phase 6: Model / Layer Manager, Streaming & Prefetch
 # =============================================================================
 add_library(agr_model STATIC
     src/model/FileStorageBackend.cpp
@@ -222,7 +222,7 @@ target_include_directories(agr_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_model PUBLIC agr_scheduler agr_mem agr_backend)
 
 # =============================================================================
-# agr_residency — Phase 14: Real Model Residency & Streaming
+# agr_residency â€” Phase 14: Real Model Residency & Streaming
 # =============================================================================
 add_library(agr_residency STATIC
     src/model/FileModelDataSource.cpp
@@ -236,7 +236,7 @@ target_include_directories(agr_residency PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_residency PUBLIC agr_model agr_backend agr_core llama)
 
 # =============================================================================
-# agr_primitives — Phase 16: Native HeteroAccel Execution Primitives
+# agr_primitives â€” Phase 16: Native HeteroAccel Execution Primitives
 # Tensor types, HostBuffer, CPU ops, IBackendExecutor, CpuBackendExecutor.
 # =============================================================================
 add_library(agr_primitives STATIC
@@ -247,7 +247,7 @@ target_include_directories(agr_primitives PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(agr_primitives PUBLIC agr_core)
 
 # =============================================================================
-# agr_hydroxl — Phase 17: HydroXL Native Inference Engine
+# agr_hydroxl â€” Phase 17: HydroXL Native Inference Engine
 # Independent native engine: GGUF loader, Q4_K dequant, BPE tokenizer,
 # Qwen2 forward pass, KV cache, sampler, and IExecutionEngine adapter.
 # Does NOT link against llama at runtime; uses agr_engine for interfaces only.
@@ -267,7 +267,7 @@ target_include_directories(agr_hydroxl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_hydroxl PUBLIC agr_engine agr_core)
 
 # =============================================================================
-# agr_execution — Phase 15: Heterogeneous Execution Graph
+# agr_execution â€” Phase 15: Heterogeneous Execution Graph
 # =============================================================================
 add_library(agr_execution STATIC
     src/execution/ExecutionGraph.cpp
@@ -279,7 +279,7 @@ target_link_libraries(agr_execution PUBLIC agr_residency agr_engine agr_analysis
 
 
 # =============================================================================
-# agr_inference — Phase 7+11: HeteroRuntime API
+# agr_inference â€” Phase 7+11: HeteroRuntime API
 # Note: LlamaCppBackend.cpp is now compiled in agr_engine to avoid circular deps.
 # =============================================================================
 add_library(agr_inference STATIC
@@ -289,9 +289,9 @@ target_include_directories(agr_inference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_inference PUBLIC agr_model agr_residency agr_execution agr_llm agr_analysis agr_engine agr_scheduler agr_mem agr_backend agr_core llama agr_profiler)
 
 # =============================================================================
-# agr_engine — Phase 11: Universal Execution Engine Interface
+# agr_engine â€” Phase 11: Universal Execution Engine Interface
 # LlamaCppBackend.cpp is compiled here so that agr_engine owns the full
-# llama.cpp→IExecutionEngine chain without depending on agr_inference.
+# llama.cppâ†’IExecutionEngine chain without depending on agr_inference.
 # =============================================================================
 add_library(agr_engine STATIC
     src/engine/EngineCapability.cpp
@@ -311,7 +311,7 @@ else()
 endif()
 
 # =============================================================================
-# agr_analysis — Phase 12: Model Inspection and Capability Analysis
+# agr_analysis â€” Phase 12: Model Inspection and Capability Analysis
 # =============================================================================
 add_library(agr_analysis STATIC
     src/analysis/CapabilityReport.cpp
@@ -323,7 +323,7 @@ target_include_directories(agr_analysis PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
 
 # =============================================================================
-# adaptive-gpu — main CLI executable (Phase 1..13)
+# adaptive-gpu â€” main CLI executable (Phase 1..13)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
 target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler agr_primitives agr_hydroxl)
@@ -336,5 +336,120 @@ add_custom_command(TARGET adaptive-gpu POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AGR_SHADER_SPV} $<TARGET_FILE_DIR:adaptive-gpu>/shaders/vector_add.comp.spv
 )
 
-enable_testing()
-add_subdirectory(tests)
+# =============================================================================
+# Phase 18: Dynamic Engine Plugin System
+# =============================================================================
+# Plugin ABI header and test plugin targets.
+# The plugin SDK (PluginSdk.h/PluginAbis.h) is header-only; the actual
+# plugin DLLs are built as separate shared-library targets and installed
+# into the documented plugin directory beside the executable.
+
+# --- Plugin ABI header (header-only, included by host and plugins) ---
+add_library(agr_plugin_abi INTERFACE src/plugin/PluginAbis.h)
+target_include_directories(agr_plugin_abi INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin)
+
+# --- Test plugin: independently compiled plugin demonstrating the ABI ---
+# This plugin is built as a CDLL (Windows .dll) that implements the full
+# plugin ABI. It is completely independent of the host executable.
+# The CMake target 'hydroxl_test_plugin' builds the plugin DLL.
+#
+# Build requirements:
+#   - Define AGR_PLUGIN_BUILDING_DLL before including PluginAbis.h
+#   - Target the same platform as the host (Windows x64 / MSVC)
+#   - Link against no internal HeteroAccel libraries (standalone DLL)
+add_library(hydroxl_test_plugin SHARED test_plugin.cpp)
+set_target_properties(hydroxl_test_plugin PROPERTIES
+    WIN32 TRUE
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    VS_DEBUG_RUNTIME_LOOKUP TRUE
+    VS_DEBUG_INFO INHERIT
+)
+target_include_directories(hydroxl_test_plugin PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# Export the plugin DLL functions with the correct calling convention
+# (the __stdcall calling convention is already in the ABI header)
+if(MSVC)
+    target_compile_definitions(hydroxl_test_plugin PRIVATE
+        "AGR_PLUGIN_BUILDING_DLL"
+    )
+    # Use the MSVC C runtime DLL (CRTDLL) - no forced LIBCMT to avoid
+    # ABI mismatch between host and plugin
+endif()
+
+# Post-build step: copy the plugin DLL to the executable's plugin directory.
+# The host's PluginLoader scans ./plugins relative to the executable by default.
+# We copy here so 'plugin_discover()' can find it without environment variable setup.
+# Use generator expression to copy to the directory where the executable resides.
+add_custom_command(TARGET hydroxl_test_plugin POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:adaptive-gpu>/plugins"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:hydroxl_test_plugin>"
+        "$<TARGET_FILE_DIR:adaptive-gpu>/plugins/hydroxl-test.dll"
+    COMMENT "Copy test plugin to executable plugin directory"
+    VERBATIM
+)
+
+# Ensure the plugins directory exists relative to the executable at
+# every build configuration (single-config and multi-config).
+# We use a lightweight guard so the directory is created once.
+if(NOT CMAKE_CONFIGURATION_TYPES)
+    # Single-config generators (Makefiles, Ninja)
+    add_custom_command(
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:adaptive-gpu>/plugins
+        VERBATIM
+    )
+else()
+    # Multi-config generators (Visual Studio): create per-config
+    foreach(cfg IN ITEMS ${CMAKE_CONFIGURATION_TYPES})
+        add_custom_command(
+            TARGET adaptive-gpu POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                $<TARGET_FILE_DIR:adaptive-gpu>/plugins
+            VERBATIM
+        )
+    endforeach()
+endif()
+
+# ---------------------------------------------------------------------------
+# Plugin discovery integration
+# ---------------------------------------------------------------------------
+# The host's PluginLoader (PluginLoader.cpp) scans the directory specified by
+# AGR_PLUGIN_DIR env var, defaulting to "./plugins" relative to the executable.
+# The installed plugin (hydroxl-test.dll) placed above will be found automatically.
+
+# Registry of installed plugins (for CMake introspection only; the runtime
+# discovers plugins dynamically at runtime).
+set(INSTALLED_PLUGINS
+    "hydroxl-test:hydroxl-test:1.0.0:LLM:HeteroAccel Project"
+)
+
+# ---------------------------------------------------------------------------
+# Integration with ExecutionEngineRegistry
+# ---------------------------------------------------------------------------
+# At host startup, the PluginLoader will call ExecutionEngineRegistry::registerFactory
+# for each discovered plugin that reports a compatible registry_key.
+# The built-in "llama.cpp" registration is preserved; plugin registrations
+# are added dynamically.
+
+# The host plugin initialization sequence (simplified):
+#   1. PluginLoader::plugin_discover() â€” scan ./plugins or AGR_PLUGIN_DIR
+#   2. For each loadable plugin, fetch identity + capabilities
+#   3. ExecutionEngineRegistry::registerFactory(key, description, factory)
+#   4. Engine can be selected via EngineCapabilitySet filtering
+
+# The existing ExecutionEngineRegistry registration for "llama.cpp" remains
+# untouched; new plugins are added alongside it.
+
+# ---------------------------------------------------------------------------
+# Test suite registration
+# ---------------------------------------------------------------------------
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

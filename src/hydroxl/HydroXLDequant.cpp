@@ -260,5 +260,127 @@ bool dequant_q3k(const void* raw_data, float* dst, uint64_t n_elements) noexcept
     return true;
 }
 
+void dequant_q5_0_block(const uint8_t* raw, float* dst) noexcept {
+    // Read FP16 scale from bytes 0-1 by combining into a uint16_t
+    uint16_t d_raw;
+    std::memcpy(&d_raw, raw, 2);
+    float d = fp16_to_float(d_raw);
+
+    // Decode 32 x 5-bit values from bytes 2-21
+    for (int i = 0; i < 32; ++i) {
+        int byte_idx = i / 5;
+        int bit_offset = (i % 5) * 5;
+        uint8_t byte_val = raw[2 + byte_idx];
+        uint8_t val = (byte_val >> bit_offset) & 0x1F;
+        dst[i] = d * (static_cast<float>(val) - 16.0f);
+    }
+}
+
+bool dequant_q5_0(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
+    if (!raw_data || !dst || n_elements == 0) return false;
+    if (n_elements % 32 != 0) return false;  // 32 elements per block
+
+    uint64_t n_blocks = n_elements / 32;
+    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
+
+    for (uint64_t b = 0; b < n_blocks; ++b) {
+        dequant_q5_0_block(src + b * 22,
+                           dst  + b * 32);
+    }
+    return true;
+}
+
+// Q5_1 block dequantization  (GGML_TYPE_Q5_1 = 7)
+// Same block layout as Q5_0 (32 elements, 22 bytes) but different
+// scaling/offset for the quantized values.
+void dequant_q5_1_block(const uint8_t* raw, float* dst) noexcept {
+    // Read FP16 scale from bytes 0-1
+    uint16_t d_raw;
+    std::memcpy(&d_raw, raw, 2);
+    float d = fp16_to_float(d_raw);
+
+    // Decode 32 x 5-bit values from bytes 2-21
+    // Q5_1 uses a different offset: zero at value 0 (not 16)
+    // Block is 24 bytes (2 bytes scale + 20 bytes 5-bit values + 2 bytes min/max metadata)
+    for (int i = 0; i < 32; ++i) {
+        int byte_idx = i / 5;
+        int bit_offset = (i % 5) * 5;
+        uint8_t byte_val = raw[2 + byte_idx];
+        uint8_t val = (byte_val >> bit_offset) & 0x1F;
+        // Q5_1: zero at q=0, range [0, 31]*d
+        dst[i] = d * static_cast<float>(val);
+    }
+}
+
+// Dequantize a full Q5_1 tensor (type id 7).
+bool dequant_q5_1(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
+    if (!raw_data || !dst || n_elements == 0) return false;
+    if (n_elements % 32 != 0) return false;
+
+    uint64_t n_blocks = n_elements / 32;
+    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
+
+    for (uint64_t b = 0; b < n_blocks; ++b) {
+        dequant_q5_1_block(src + b * 24,
+                           dst  + b * 32);
+    }
+    return true;
+}
+
+// Q6_K dequantization (GGML_TYPE_Q6_K = 14)
+// 256 elements per block, 210 bytes per block
+// Block: [d_fp16 (2 bytes)][q0..q255 packed 6-bit values (192 bytes)]
+//        [scales (16 bytes) + minmax (2 bytes)]
+// Dequantization: x[i] = d * group_scale[group] * (q[i] - 32)
+//   where q[i] is the 6-bit unsigned value (0-63), (q[i]-32) gives signed [-32,+31]
+//   group_scale is read from the 16 bytes of per-group FP16 scales following the value data
+void dequant_q6_k_block(const uint8_t* raw, float* dst) noexcept {
+    // Read FP16 super-scale from bytes 0-1
+    uint16_t d_raw;
+    std::memcpy(&d_raw, raw, 2);
+    float d = fp16_to_float(d_raw);
+
+    // Read per-group scales from bytes 194-211 (16 bytes FP16 scales + 2 bytes min/max)
+    // 8 groups of 32 elements each, each group has an FP16 scale factor
+    float group_scales[8];
+    for (int g = 0; g < 8; ++g) {
+        uint16_t scale_raw;
+        std::memcpy(&scale_raw, raw + 194 + g * 2, 2);
+        group_scales[g] = fp16_to_float(scale_raw);
+    }
+
+    // Decode 256 x 6-bit values from bytes 2-193
+    // 256 elements * 6 bits = 1536 bits = 192 bytes
+    for (int i = 0; i < 256; ++i) {
+        int byte_idx = i / 4;
+        int bit_offset = (i % 4) * 6;
+        uint8_t byte_val = raw[2 + byte_idx];
+        uint8_t val = (byte_val >> bit_offset) & 0x3F;
+        // Signed 6-bit value: excess-32 (0 → -32, 63 → +31)
+        int val_signed = static_cast<int>(val) - 32;
+        // Group index: i / 32
+        int group = i / 32;
+        dst[i] = d * group_scales[group] * static_cast<float>(val_signed);
+    }
+}
+
+bool dequant_q6_k(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
+    if (!raw_data || !dst || n_elements == 0) return false;
+    if (n_elements % 256 != 0) return false;
+
+    uint64_t n_blocks = n_elements / 256;
+    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
+
+    for (uint64_t b = 0; b < n_blocks; ++b) {
+        dequant_q6_k_block(src + b * 210,
+                           dst  + b * 256);
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// End of Q5_0/Q5_1/Q6_K dequantization implementations
+// ---------------------------------------------------------------------------
+
 } // namespace hydroxl
 } // namespace agr

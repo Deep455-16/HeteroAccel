@@ -239,10 +239,17 @@ bool GGUFLoader::parseTensors() {
         case GGMLType::F16:
             desc.n_bytes = n_elems * 2;
             break;
-        case GGMLType::Q4_K_S:
-        case GGMLType::Q4_K_M:
+        case GGMLType::Q4_K:
             // 256 elements per block, 144 bytes per block
             desc.n_bytes = ((n_elems + Q4K_BLOCK_SIZE - 1) / Q4K_BLOCK_SIZE) * Q4K_RAW_BLOCK_BYTES;
+            break;
+        case GGMLType::Q5_0:
+            // 32 elements per block, 22 bytes per block
+            desc.n_bytes = ((n_elems + 31) / 32) * 22;
+            break;
+        case GGMLType::Q5_1:
+            // 32 elements per block, 24 bytes per block
+            desc.n_bytes = ((n_elems + 31) / 32) * 24;
             break;
         case GGMLType::Q6_K:
             // 256 elements per block, 210 bytes per block

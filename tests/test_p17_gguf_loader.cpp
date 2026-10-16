@@ -64,7 +64,7 @@ int main() {
         AGR_CHECK(t != nullptr);
         AGR_CHECK(t->n_bytes > 0);
         std::cout << "token_embd type=" << toString(t->type)
-                  << " n_bytes=" << t->n_bytes << "\n";
+                  << " raw_type_id=" << static_cast<uint32_t>(t->type) << " n_bytes=" << t->n_bytes << "\n";
     }
 
     // Hyperparameters match known Qwen2.5-0.5B values

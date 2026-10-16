@@ -39,8 +39,41 @@ void dequant_q8_0_block(const uint8_t* raw, float* dst) noexcept;
 /// Dequantize a full Q8_0 tensor.
 bool dequant_q8_0(const void* raw_data, float* dst, uint64_t n_elements) noexcept;
 
+/// Dequantize a full Q8_0 tensor.
+bool dequant_q8_0(const void* raw_data, float* dst, uint64_t n_elements) noexcept;
+
 /// Dequantize an F16 tensor (fp16->f32 conversion).
 void dequant_f16(const void* raw_data, float* dst, uint64_t n_elements) noexcept;
+
+// Q5_0 dequantization (GGML_TYPE_Q5_0 = 6)
+// 32 elements per block, 22 bytes per block
+// Block: [d_fp16 (2 bytes)][q0..q31 packed 5-bit values (20 bytes)]
+// Dequantization: x[i] = d * (q[i] - 16.0f)  (centered, zero at q=16)
+void dequant_q5_0_block(const uint8_t* raw, float* dst) noexcept;
+
+/// Dequantize a full Q5_0 tensor (type id 6).
+bool dequant_q5_0(const void* raw_data, float* dst, uint64_t n_elements) noexcept;
+
+// Q5_1 dequantization (GGML_TYPE_Q5_1 = 7)
+// 32 elements per block, 22 bytes per block (same block layout as Q5_0,
+//  but different scaling/offset for the quantized values).
+void dequant_q5_1_block(const uint8_t* raw, float* dst) noexcept;
+
+/// Dequantize a full Q5_1 tensor (type id 7).
+bool dequant_q5_1(const void* raw_data, float* dst, uint64_t n_elements) noexcept;
+
+// Q6_K dequantization (GGML_TYPE_Q6_K = 14)
+// 256 elements per block, 210 bytes per block
+// Block: [d_fp16 (2 bytes)][q0..q255 packed 6-bit values (210 bytes)]
+// Dequantization: x[i] = d * q[i]  (unsigned, 0-63 range per value)
+void dequant_q6_k_block(const uint8_t* raw, float* dst) noexcept;
+
+/// Dequantize a full Q6_K tensor (type id 14).
+bool dequant_q6_k(const void* raw_data, float* dst, uint64_t n_elements) noexcept;
+
+// ---------------------------------------------------------------------------
+/// End of Q5_0/Q5_1/Q6_K dequantization implementations
+// ---------------------------------------------------------------------------
 
 } // namespace hydroxl
 } // namespace agr
