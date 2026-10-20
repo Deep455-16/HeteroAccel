@@ -45,7 +45,8 @@ using GGUFValue = std::variant<
     std::string, // STRING
     std::vector<uint32_t>,
     std::vector<int32_t>,
-    std::vector<float>
+    std::vector<float>,
+    std::vector<std::string>  // STRING arrays (tokenizer vocab / merges)
 >;
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,11 @@ public:
     float    kvFloat (const std::string& key, float    def = 0.0f) const;
     std::string kvString(const std::string& key, const std::string& def = "") const;
 
+    /// Convenience: extract a STRING-array metadata value (e.g. tokenizer
+    /// vocabulary or merges). Returns an empty vector if the key is absent
+    /// or is not a retained string array.
+    std::vector<std::string> kvStringArray(const std::string& key) const;
+
     /// All key-value entries.
     const std::unordered_map<std::string, GGUFValue>& metadata() const { return kv_; }
 
@@ -95,6 +101,9 @@ public:
 
     /// Byte offset from the START of the file to the tensor data section.
     uint64_t dataOffset() const { return data_offset_; }
+
+    /// Total size of the opened file in bytes (0 until open() succeeds).
+    uint64_t fileSize() const { return file_size_; }
 
     /// File path.
     const std::string& path() const { return path_; }
@@ -135,6 +144,7 @@ private:
     uint64_t n_tensors_  = 0;
     uint64_t n_kv_       = 0;
     uint64_t data_offset_ = 0;  ///< Byte offset from start of file to first tensor data
+    uint64_t file_size_   = 0;  ///< Total file size, used for bounds checks
 
     std::unordered_map<std::string, GGUFValue> kv_;
     std::vector<GGUFTensorDesc> tensors_;

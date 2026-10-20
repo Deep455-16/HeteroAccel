@@ -63,3 +63,17 @@ secrets.*
 *.zip
 VulkanSDK.exe
 *.txt
+
+# Stale backup files (*.bak at any level)
+*.bak
+
+# Stale alternate build directories (primary 'build/' is already ignored)
+build-phase18/
+build-phase18-vs2026/
+
+# Temporary root-level build/test output files
+build_output*.txt
+build_p17_tests.txt
+
+# Misc dev artifacts at root
+filter.sh

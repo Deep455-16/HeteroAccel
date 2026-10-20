@@ -160,6 +160,39 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
         }
         break;
     }
+    case GGMLType::Q5_1: {
+        if (n_elems % 32 != 0) {
+            last_error_ = "Tensor '" + name + "' n_elems not divisible by 32";
+            return false;
+        }
+        std::vector<uint8_t> raw(desc->n_bytes);
+        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
+            last_error_ = "IO error reading tensor '" + name + "' (Q5_1)";
+            return false;
+        }
+        if (!dequant_q5_1(raw.data(), out.data(), n_elems)) {
+            last_error_ = "Q5_1 dequant failed for tensor '" + name + "'";
+            return false;
+        }
+        break;
+    }
+    case GGMLType::Q3_K: {
+        if (n_elems % Q3K_BLOCK_SIZE != 0) {
+            last_error_ = "Tensor '" + name + "' n_elems not divisible by " +
+                          std::to_string(Q3K_BLOCK_SIZE);
+            return false;
+        }
+        std::vector<uint8_t> raw(desc->n_bytes);
+        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
+            last_error_ = "IO error reading tensor '" + name + "' (Q3_K)";
+            return false;
+        }
+        if (!dequant_q3k(raw.data(), out.data(), n_elems)) {
+            last_error_ = "Q3_K dequant failed for tensor '" + name + "'";
+            return false;
+        }
+        break;
+    }
     default:
         last_error_ = "Tensor '" + name + "' has unsupported type " +
                       toString(desc->type);

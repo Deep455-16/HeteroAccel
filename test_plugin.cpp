@@ -11,7 +11,11 @@
 //   - Capability manifest reporting
 //   - Simple deterministic "test operation" (not real LLM inference)
 
-// Define AGR_PLUGIN_BUILDING_DLL so the ABI headers export correctly
+// AGR_PLUGIN_BUILDING_DLL is set by CMake so AGR_PLUGIN_EXPORT resolves to
+// __declspec(dllexport).  We additionally use 'extern "C"' on every entry
+// point so MSVC exports them with unmangled C names (required by
+// GetProcAddress, which looks up symbols by exact string).
+#define AGR_PLUGIN_BUILDING_DLL
 #include "plugin/PluginAbis.h"
 
 // Ensure ExecutionResult type is available in the agr namespace
@@ -61,9 +65,19 @@ typedef struct {
 } TestEngineContext;
 
 // ---------------------------------------------------------------------------
+// Exported function: pluginGetAbiVersion (REQUIRED, negotiated first)
+// ---------------------------------------------------------------------------
+
+extern "C" __declspec(dllexport)
+uint32_t __stdcall pluginGetAbiVersion(void) {
+    return AGR_PLUGIN_ABI_VERSION;
+}
+
+// ---------------------------------------------------------------------------
 // Exported function: pluginGetIdentity
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginGetIdentity(agrPluginModuleHandle hModule, agrPluginIdentity* outIdentity) {
     // OutIdentity points to a host-allocated agrPluginIdentity struct.
     // We must fill it without exceeding bounds.
@@ -115,6 +129,7 @@ int __stdcall pluginGetIdentity(agrPluginModuleHandle hModule, agrPluginIdentity
 // Exported function: pluginInitialize
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginInitialize(agrPluginModuleHandle hModule, const agrPluginIdentity* identity, void** outEngineContext) {
     // identity is the value returned by pluginGetIdentity (may be nullptr on first call
     // if the host hasn't called getIdentity yet; we handle both cases).
@@ -139,6 +154,7 @@ int __stdcall pluginInitialize(agrPluginModuleHandle hModule, const agrPluginIde
 // Exported function: pluginExecute
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginExecute(agrPluginModuleHandle hModule, const void* ctx, void* outResult) {
     // ctx is an opaque ExecutionContext pointer provided by the host.
     // outResult must be filled with an ExecutionResult struct.
@@ -203,6 +219,7 @@ int __stdcall pluginExecute(agrPluginModuleHandle hModule, const void* ctx, void
 // Exported function: pluginShutdown
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginShutdown(agrPluginModuleHandle hModule) {
     // Free any allocated resources.
     if (g_plugin_module) {
@@ -226,6 +243,7 @@ int __stdcall pluginShutdown(agrPluginModuleHandle hModule) {
 // Exported function: pluginGetState
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginGetState(agrPluginModuleHandle hModule) {
     return AGR_PLUGIN_STATE_READY;
 }
@@ -234,6 +252,7 @@ int __stdcall pluginGetState(agrPluginModuleHandle hModule) {
 // Exported function: pluginGetError
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginGetError(agrPluginModuleHandle hModule, agrPluginError* outError) {
     // Return the last error encountered by the plugin.
     // For this test plugin, we have no internal error state beyond what
@@ -250,6 +269,7 @@ int __stdcall pluginGetError(agrPluginModuleHandle hModule, agrPluginError* outE
 // Exported function: pluginGetCapabilities
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 int __stdcall pluginGetCapabilities(agrPluginModuleHandle hModule, agrPluginCapabilityManifest* outManifest) {
     // Return the capability manifest (bitmask of supported capabilities).
     if (!outManifest) return AGR_PLUGIN_ERROR_INVALID_REQUEST;
@@ -272,6 +292,7 @@ int __stdcall pluginGetCapabilities(agrPluginModuleHandle hModule, agrPluginCapa
 // Exported function: pluginCreateEngine (optional)
 // ---------------------------------------------------------------------------
 
+extern "C" __declspec(dllexport)
 void __stdcall pluginCreateEngine(agrPluginModuleHandle hModule, const agrPluginIdentity* identity, void** outEngineInstance) {
     // Optional factory function. For this test we don't fully implement
     // engine instance creation via this path; the host uses the dynamic

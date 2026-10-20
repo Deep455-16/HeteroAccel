@@ -26,6 +26,19 @@ bool GGUFLoader::open(const std::string& path) {
         return false;
     }
 
+    // Record total file size for bounds checking during tensor reads.
+    file_.seekg(0, std::ios::end);
+    if (!file_) {
+        last_error_ = "Cannot seek file: " + path;
+        return false;
+    }
+    file_size_ = static_cast<uint64_t>(file_.tellg());
+    file_.seekg(0, std::ios::beg);
+    if (file_size_ < 12) { // magic + version + two counts is the bare minimum
+        last_error_ = "File too small to be GGUF: " + path;
+        return false;
+    }
+
     if (!parseHeader()) return false;
     if (!parseKV())     return false;
     if (!parseTensors()) return false;
@@ -37,7 +50,22 @@ bool GGUFLoader::open(const std::string& path) {
 
     uint64_t cur_pos = static_cast<uint64_t>(file_.tellg());
     uint64_t pad = (align - (cur_pos % align)) % align;
+    if (cur_pos > UINT64_MAX - pad) {
+        last_error_ = "Data offset overflow while padding to alignment";
+        return false;
+    }
     data_offset_ = cur_pos + pad;
+
+    // When there are no tensors (metadata-only file) the data section can
+    // be aligned to a position that equals or exceeds the file size — that
+    // is valid because there is nothing to read past the KV metadata.
+    // Only reject if tensors are declared but the data section is unreachable.
+    if (n_tensors_ > 0 && data_offset_ >= file_size_) {
+        last_error_ = "Data section offset " + std::to_string(data_offset_) +
+                      " is at or beyond file size " + std::to_string(file_size_) +
+                      " with " + std::to_string(n_tensors_) + " declared tensors";
+        return false;
+    }
 
     open_ = true;
     return true;
@@ -93,12 +121,14 @@ bool GGUFLoader::readArray(GGUFValue& out) {
     uint64_t count = 0;
     if (!readRaw(elem_type_raw)) return false;
     if (!readRaw(count))         return false;
-    if (count > (1u << 20))  {
-        last_error_ = "Array count " + std::to_string(count) + " exceeds 1M limit";
+    if (count > (1u << 24))  {
+        last_error_ = "Array count " + std::to_string(count) + " exceeds 16M limit";
         return false;
     }
 
     auto elem_type = static_cast<GGUFValueType>(elem_type_raw);
+
+    // Retained array types (tokenizer vocab, merges, token types, scores).
     switch (elem_type) {
     case GGUFValueType::UINT32: {
         std::vector<uint32_t> v(static_cast<size_t>(count));
@@ -108,7 +138,7 @@ bool GGUFLoader::readArray(GGUFValue& out) {
             return false;
         }
         out = std::move(v);
-        break;
+        return true;
     }
     case GGUFValueType::INT32: {
         std::vector<int32_t> v(static_cast<size_t>(count));
@@ -118,7 +148,7 @@ bool GGUFLoader::readArray(GGUFValue& out) {
             return false;
         }
         out = std::move(v);
-        break;
+        return true;
     }
     case GGUFValueType::FLOAT32: {
         std::vector<float> v(static_cast<size_t>(count));
@@ -128,27 +158,64 @@ bool GGUFLoader::readArray(GGUFValue& out) {
             return false;
         }
         out = std::move(v);
-        break;
+        return true;
     }
     case GGUFValueType::STRING: {
-        // Array of strings: skip all strings (too large for in-memory storage here)
-        // Store as empty string (we do not need string arrays for hparams/vocab)
-        std::string skipped;
+        std::vector<std::string> v;
+        v.reserve(static_cast<size_t>(count));
         for (uint64_t i = 0; i < count; ++i) {
-            if (!readString(skipped)) return false;
+            std::string s;
+            if (!readString(s)) return false;
+            v.push_back(std::move(s));
         }
-        out = std::string("<string_array_skipped>");
-        break;
+        out = std::move(v);
+        return true;
     }
-    default: {
-        // Skip unknown array element types
-        // We do not need them for hparams
+    default:
+        break; // not retained — skip exactly, below
+    }
+
+    // Skipped-but-known element types: consume exactly count * elem_size
+    // bytes (or recursing for nested arrays) so the stream stays in sync.
+    uint64_t elem_size = 0;
+    switch (elem_type) {
+    case GGUFValueType::UINT8:
+    case GGUFValueType::INT8:
+    case GGUFValueType::BOOL:   elem_size = 1; break;
+    case GGUFValueType::UINT16:
+    case GGUFValueType::INT16:  elem_size = 2; break;
+    case GGUFValueType::UINT64:
+    case GGUFValueType::INT64:
+    case GGUFValueType::FLOAT64: elem_size = 8; break;
+    case GGUFValueType::ARRAY: {
+        // Nested arrays: recurse so variable-size elements are consumed
+        // exactly. Discard the values.
+        for (uint64_t i = 0; i < count; ++i) {
+            GGUFValue discarded;
+            if (!readArray(discarded)) return false;
+        }
         out = std::string("<array_type_skipped>");
-        // We cannot safely skip without knowing element size.
-        // Mark as best-effort parse; caller ignores these keys.
-        break;
+        return true;
     }
+    default:
+        // Unknown element type: the element size is undefined, so the
+        // stream position after this value cannot be known. Reject the
+        // file rather than silently mis-parsing everything that follows.
+        last_error_ = "Unknown array element type: " +
+                      std::to_string(elem_type_raw);
+        return false;
     }
+
+    if (count > 0) {
+        uint64_t skip = count * elem_size; // count <= 16M, elem_size <= 8: no overflow
+        if (!file_.seekg(static_cast<std::streamoff>(
+                static_cast<uint64_t>(file_.tellg()) + skip))) {
+            last_error_ = "EOF skipping array of type " +
+                          std::to_string(elem_type_raw);
+            return false;
+        }
+    }
+    out = std::string("<array_type_skipped>");
     return true;
 }
 
@@ -239,9 +306,21 @@ bool GGUFLoader::parseTensors() {
         case GGMLType::F16:
             desc.n_bytes = n_elems * 2;
             break;
+        case GGMLType::Q4_0:
+            // 32 elements per block, 18 bytes per block
+            desc.n_bytes = ((n_elems + Q4_0_BLOCK_SIZE - 1) / Q4_0_BLOCK_SIZE) * Q4_0_BLOCK_BYTES;
+            break;
+        case GGMLType::Q4_1:
+            // 32 elements per block, 20 bytes per block
+            desc.n_bytes = ((n_elems + Q4_1_BLOCK_SIZE - 1) / Q4_1_BLOCK_SIZE) * Q4_1_BLOCK_BYTES;
+            break;
         case GGMLType::Q4_K:
             // 256 elements per block, 144 bytes per block
             desc.n_bytes = ((n_elems + Q4K_BLOCK_SIZE - 1) / Q4K_BLOCK_SIZE) * Q4K_RAW_BLOCK_BYTES;
+            break;
+        case GGMLType::Q3_K:
+            // 256 elements per block, 110 bytes per block
+            desc.n_bytes = ((n_elems + Q3K_BLOCK_SIZE - 1) / Q3K_BLOCK_SIZE) * Q3K_RAW_BLOCK_BYTES;
             break;
         case GGMLType::Q5_0:
             // 32 elements per block, 22 bytes per block
@@ -257,6 +336,22 @@ bool GGUFLoader::parseTensors() {
             break;
         case GGMLType::Q8_0:
             desc.n_bytes = ((n_elems + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE) * Q8_0_BLOCK_BYTES;
+            break;
+        case GGMLType::Q8_1:
+            // 32 elements per block, 36 bytes per block (d: fp16, s: fp16, qs: 32 x int8)
+            desc.n_bytes = ((n_elems + 31) / 32) * 36;
+            break;
+        case GGMLType::Q2_K:
+            // 256 elements per block, 84 bytes per block
+            desc.n_bytes = ((n_elems + 255) / 256) * 84;
+            break;
+        case GGMLType::Q5_K:
+            // 256 elements per block, 176 bytes per block
+            desc.n_bytes = ((n_elems + 255) / 256) * 176;
+            break;
+        case GGMLType::Q8_K:
+            // 256 elements per block, 292 bytes per block
+            desc.n_bytes = ((n_elems + 255) / 256) * 292;
             break;
         default:
             // Unknown — store 0; loader will skip/reject
@@ -314,6 +409,13 @@ std::string GGUFLoader::kvString(const std::string& key, const std::string& def)
     return def;
 }
 
+std::vector<std::string> GGUFLoader::kvStringArray(const std::string& key) const {
+    auto* v = kv(key);
+    if (!v) return {};
+    if (auto* p = std::get_if<std::vector<std::string>>(v)) return *p;
+    return {};
+}
+
 const GGUFTensorDesc* GGUFLoader::findTensor(const std::string& name) const {
     for (const auto& t : tensors_) {
         if (t.name == name) return &t;
@@ -327,7 +429,14 @@ bool GGUFLoader::readTensorData(const GGUFTensorDesc& desc,
     if (desc.n_bytes == 0 || !dst) return false;
     if (desc.n_bytes > max_bytes) return false;
 
+    // Overflow-safe bounds check against the real file size.
+    if (desc.offset > file_size_ || desc.n_bytes > file_size_ - desc.offset) {
+        return false;
+    }
     uint64_t file_offset = data_offset_ + desc.offset;
+    if (file_offset > file_size_ || desc.n_bytes > file_size_ - file_offset) {
+        return false;
+    }
 
     file_.seekg(static_cast<std::streamoff>(file_offset));
     if (!file_) return false;

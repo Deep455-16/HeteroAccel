@@ -210,8 +210,10 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
 
     // ---- Tokenize prompt ----
     auto t_tok0 = std::chrono::steady_clock::now();
+    // BOS behaviour follows the tokenizer metadata: Qwen2's gpt2-style
+    // tokenizer does not prepend BOS, matching llama.cpp for this arch.
     std::vector<hydroxl::TokenID> prompt_tokens =
-        tokenizer_->encode(ctx.prompt, /*add_bos=*/true);
+        tokenizer_->encode(ctx.prompt, tokenizer_->addsBos());
     result.telemetry.prompt_tokens = static_cast<int>(prompt_tokens.size());
 
     auto t_tok1 = std::chrono::steady_clock::now();
@@ -246,6 +248,13 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
     auto t_prefill1 = std::chrono::steady_clock::now();
     result.telemetry.prompt_eval_ms =
         std::chrono::duration<double, std::milli>(t_prefill1 - t_prefill0).count();
+
+    // Guard: with no prompt tokens there are no logits to sample from.
+    if (prompt_tokens.empty() || logits.empty()) {
+        result.success = false;
+        result.error   = "Prompt encoded to zero tokens — nothing to condition on";
+        return result;
+    }
 
     // ---- Autoregressive generation ----
     hydroxl::SamplerParams sp;

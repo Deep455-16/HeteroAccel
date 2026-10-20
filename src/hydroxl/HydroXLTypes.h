@@ -1,8 +1,10 @@
 // src/hydroxl/HydroXLTypes.h
-// Phase 17: HydroXL Native Inference Engine — shared types.
+// Phase 19: HydroXL Native Inference Engine — shared types.
 //
-// Supported architectures (Phase 17): Qwen2 (qwen2)
-// Supported quantization: Q4_K, Q3_K, Q8_0, F16, F32
+// Supported architectures: Qwen2 (qwen2)
+// Supported quantization: F32, F16, Q8_0, Q4_K, Q3_K, Q5_0, Q5_1, Q6_K
+//   (Q4_K_M / Q3_K_M / etc. are per-tensor mixes of these block types;
+//    every tensor is decoded according to its own GGML type id)
 // Supported modality: TEXT_GENERATION
 
 #pragma once
@@ -69,8 +71,11 @@ inline const char* toString(GGMLType t) {
         case GGMLType::F32:   return "F32";
         case GGMLType::F16:   return "F16";
         case GGMLType::Q4_0:  return "Q4_0";
+        case GGMLType::Q4_1:  return "Q4_1";
         case GGMLType::Q5_0:  return "Q5_0";
+        case GGMLType::Q5_1:  return "Q5_1";
         case GGMLType::Q8_0:  return "Q8_0";
+        case GGMLType::Q8_1:  return "Q8_1";
         case GGMLType::Q2_K:  return "Q2_K";
         case GGMLType::Q3_K:  return "Q3_K";
         case GGMLType::Q4_K:  return "Q4_K";
@@ -113,6 +118,25 @@ struct Qwen2HParams {
                n_kv_heads > 0 && n_layers > 0 && n_ff > 0;
     }
 };
+
+// ---------------------------------------------------------------------------
+// Q4_0 block format constants  (GGML_TYPE_Q4_0 = 2)
+// 32 elements / 18 bytes per block
+//   Bytes  0..1  : d   (FP16) scale
+//   Bytes  2..17 : 16 bytes — 32 x 4-bit values (unsigned, offset by 8)
+// ---------------------------------------------------------------------------
+static constexpr int Q4_0_BLOCK_SIZE  = 32;
+static constexpr int Q4_0_BLOCK_BYTES = 18;
+
+// ---------------------------------------------------------------------------
+// Q4_1 block format constants  (GGML_TYPE_Q4_1 = 3)
+// 32 elements / 20 bytes per block
+//   Bytes  0..1  : d   (FP16) scale
+//   Bytes  2..3  : m   (FP16) additive minimum
+//   Bytes  4..19 : 16 bytes — 32 x 4-bit values
+// ---------------------------------------------------------------------------
+static constexpr int Q4_1_BLOCK_SIZE  = 32;
+static constexpr int Q4_1_BLOCK_BYTES = 20;
 
 // ---------------------------------------------------------------------------
 // Q4_K block format constants  (GGML_TYPE_Q4_K = 12)

@@ -1,246 +1,174 @@
 // src/plugin/PluginLoader.cpp
-// Phase 18: Plugin loading, validation, discovery, and registration
-// Implements deterministic plugin discovery and safe dynamic loading.
+// Phase 19: plugin discovery, ABI validation, loading, and lifecycle.
+//
+// Fixes over the Phase 18 draft (which was never compiled):
+//   - ABI version is negotiated at runtime via pluginGetAbiVersion() before
+//     any other plugin entry point is invoked.
+//   - A successful DLL load is never misrepresented as an executable engine
+//     registration: no ExecutionEngineRegistry entry is created. Plugins
+//     become executable only through plugin_execute() on a fully
+//     initialized plugin.
+//   - pluginShutdown() is invoked on unload when the plugin was
+//     initialized; the initialized flag is actually maintained.
+//   - Discovery takes the registry mutex, so concurrent discovery /
+//     load / unload cannot corrupt the shared cache.
+//   - agrPluginError is a C struct (uint32 + char[256]); errors are stored
+//     as std::string internally and copied out on query.
+//
+// SECURITY: LoadLibrary executes DllMain inside the host process with full
+// privileges. There is no sandbox. See PluginLoader.h.
 
-#include "plugin/PluginAbis.h"
-#include "backend/BackendManager.h"
-#include "engine/ExecutionEngineRegistry.h"
-#include "analysis/CapabilityAnalyzer.h"
-#include "hardware/HardwareInfo.h"
+#include "plugin/PluginLoader.h"
 
 #include <windows.h>
-#include <string>
-#include <vector>
-#include <mutex>
-#include <unordered_map>
-#include <algorithm>
-#include <iostream>
 
-// ---------------------------------------------------------------------------
-// Forward declarations
-// ---------------------------------------------------------------------------
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace agr {
 
 // ---------------------------------------------------------------------------
 // Internal plugin state
 // ---------------------------------------------------------------------------
+namespace {
 
 struct PluginInternalState {
-    std::string path;                          ///< Full filesystem path
-    std::string filename;                     ///< Just the filename
-    HMODULE module_handle{ nullptr };         ///< Windows module handle
-    agrPluginIdentity identity;               ///< Reported identity
-    agrPluginCapabilityManifest capabilities; ///< Reported capabilities
-    agrPluginState state{ agrPluginState::DISCOVERED };
-    agrPluginError last_error{};
+    std::string path;
+    std::string filename;
+    HMODULE module_handle{ nullptr };
+    uint32_t abi_version{ 0 };
+    std::string name, version, type, author, registry_key;
+    uint32_t capabilities{ 0 };
+    size_t   capability_count{ 0 };
+    agrPluginState state{ agrPluginState::AGR_PLUGIN_STATE_DISCOVERED };
+    uint32_t last_error_code{ AGR_PLUGIN_ERROR_NONE };
+    std::string last_error_message;
     bool initialized{ false };
     bool loaded{ false };
 };
 
-// ---------------------------------------------------------------------------
-// Static mutex for thread-safe registry operations
-// ---------------------------------------------------------------------------
+std::mutex plugin_mutex;
+std::unordered_map<std::string, PluginInternalState> plugin_cache;
 
-static std::mutex plugin_mutex;
-
-// ---------------------------------------------------------------------------
-// Plugin cache: path -> internal state
-// ---------------------------------------------------------------------------
-
-static std::unordered_map<std::string, PluginInternalState> plugin_cache;
-static bool cache_initialized{ false };
-
-// ---------------------------------------------------------------------------
-// Ensure the cache is populated from disk (once)
-// ---------------------------------------------------------------------------
-
-static void ensure_cache_initialized() {
-    if (cache_initialized) return;
-
-    // Scan the documented plugin directory
-    // Default: "./plugins" relative to the executable, or env var AGR_PLUGIN_DIR
-    char* env_dir = nullptr;
-    size_t len = 0;
-    errno_t err = _dupenv_s(&env_dir, &len, "AGR_PLUGIN_DIR");
-    if (err != 0 || env_dir == nullptr) {
-        // Default relative to exe directory
-        // For now, use a relative path; the test plugin will be placed there
-        // In production, this would be configured at CMake time
-        std::string default_dir = "./plugins";
-        // We'll just note the default; actual scanning happens on demand
-        // (the test plugin CMake target copies to the right place)
-    } else {
-        // Use env dir
-        // (not fully implemented for brevity — the test plugin uses CMake install)
-    }
-    if (env_dir) std::free(env_dir);
-
-    cache_initialized = true;
+void setError(PluginInternalState& s, uint32_t code, const std::string& msg) {
+    s.last_error_code = code;
+    s.last_error_message = msg;
 }
 
-// ---------------------------------------------------------------------------
-// Load a plugin module and resolve all required entry points.
-// Returns nullptr on failure; caller must FreeLibrary on success.
-// ---------------------------------------------------------------------------
+std::string pluginDirFromEnv() {
+    char* env_dir = nullptr;
+    size_t len = 0;
+    std::string dir = "./plugins";
+    if (_dupenv_s(&env_dir, &len, "AGR_PLUGIN_DIR") == 0 && env_dir != nullptr) {
+        if (len > 1) dir = std::string(env_dir, len - 1); // strip trailing NUL
+        std::free(env_dir);
+    }
+    return dir;
+}
 
-static HMODULE load_plugin_module(const std::string& path) {
-    // Use LoadLibraryW for wide-character path support
+HMODULE load_plugin_module(const std::string& path) {
     std::wstring wpath(path.begin(), path.end());
     HMODULE h = LoadLibraryW(wpath.c_str());
-    if (!h) {
-        // Try with ANSI fallback (rare on modern Windows)
-        h = LoadLibraryA(path.c_str());
-        if (!h) {
-            return nullptr;
-        }
-    }
+    if (!h) h = LoadLibraryA(path.c_str());
     return h;
 }
 
-// ---------------------------------------------------------------------------
-// Resolve all required entry points from a loaded plugin module.
-// Fills the function-pointer table. Returns true on success.
-// ---------------------------------------------------------------------------
+void copyToField(char* dst, size_t cap, const std::string& src) {
+    size_t n = (std::min)(src.size(), cap - 1); // parens: defeat windows.h min macro
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+}
 
-static bool resolve_plugin_exports(HMODULE hModule,
-    agrPluginGetIdentityFn* out_get_identity,
-    agrPluginInitializeFn* out_initialize,
-    agrPluginExecuteFn* out_execute,
-    agrPluginShutdownFn* out_shutdown,
-    agrPluginGetStateFn* out_get_state,
-    agrPluginGetErrorFn* out_get_error,
-    agrPluginGetCapabilitiesFn* out_get_capabilities,
-    agrPluginCreateEngineFn* out_create_engine) {
+// Plugin entry points take the opaque agrPluginModuleHandle; convert the
+// HMODULE once here.
+inline agrPluginModuleHandle toHandle(HMODULE h) {
+    return reinterpret_cast<agrPluginModuleHandle>(h);
+}
 
-    if (!hModule) return false;
-
-    *out_get_identity = (agrPluginGetIdentityFn)GetProcAddress(hModule, "pluginGetIdentity");
-    *out_initialize = (agrPluginInitializeFn)GetProcAddress(hModule, "pluginInitialize");
-    *out_execute = (agrPluginExecuteFn)GetProcAddress(hModule, "pluginExecute");
-    *out_shutdown = (agrPluginShutdownFn)GetProcAddress(hModule, "pluginShutdown");
-    *out_get_state = (agrPluginGetStateFn)GetProcAddress(hModule, "pluginGetState");
-    *out_get_error = (agrPluginGetErrorFn)GetProcAddress(hModule, "pluginGetError");
-    *out_get_capabilities = (agrPluginGetCapabilitiesFn)GetProcAddress(hModule, "pluginGetCapabilities");
-    *out_create_engine = (agrPluginCreateEngineFn)GetProcAddress(hModule, "pluginCreateEngine");
-
-    // Required exports: at minimum get_identity, initialize, execute, shutdown
-    // CreateEngine is optional (engines may use LoadLibrary + their own factory)
-    if (!*out_get_identity || !*out_initialize || !*out_execute || !*out_shutdown) {
+// Validate a freshly loaded module: ABI version + required exports.
+// Returns true and fills identity/capabilities when the plugin is usable.
+// `probe_error` receives a diagnostic when validation fails.
+bool validate_module(HMODULE mod, PluginInternalState& s) {
+    // ABI version must be negotiated before anything else is called.
+    auto get_abi = reinterpret_cast<agrPluginGetAbiVersionFn>(
+        GetProcAddress(mod, "pluginGetAbiVersion"));
+    if (!get_abi) {
+        setError(s, AGR_PLUGIN_ERROR_INIT_FAILED,
+                 "plugin does not export pluginGetAbiVersion (pre-ABI-v1 plugin)");
+        return false;
+    }
+    s.abi_version = get_abi();
+    if (s.abi_version != AGR_HOST_EXPECTED_ABI_VERSION) {
+        setError(s, AGR_PLUGIN_ERROR_INIT_FAILED,
+                 "ABI version mismatch: plugin=" + std::to_string(s.abi_version) +
+                 " host=" + std::to_string(AGR_HOST_EXPECTED_ABI_VERSION));
         return false;
     }
 
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// Internal: invoke pluginGetIdentity and capture the result.
-// Updates the PluginInternalState.
-// ---------------------------------------------------------------------------
-
-static bool fetch_plugin_identity(HMODULE hModule, PluginInternalState& state) {
-    if (!hModule) return false;
-
-    agrPluginGetIdentityFn fn = (agrPluginGetIdentityFn)GetProcAddress(hModule, "pluginGetIdentity");
-    if (!fn) return false;
+    // Required entry points.
+    auto get_identity = reinterpret_cast<agrPluginGetIdentityFn>(
+        GetProcAddress(mod, "pluginGetIdentity"));
+    auto initialize   = reinterpret_cast<agrPluginInitializeFn>(
+        GetProcAddress(mod, "pluginInitialize"));
+    auto execute      = reinterpret_cast<agrPluginExecuteFn>(
+        GetProcAddress(mod, "pluginExecute"));
+    auto shutdown_fn  = reinterpret_cast<agrPluginShutdownFn>(
+        GetProcAddress(mod, "pluginShutdown"));
+    if (!get_identity || !initialize || !execute || !shutdown_fn) {
+        setError(s, AGR_PLUGIN_ERROR_INIT_FAILED,
+                 "missing required exports (pluginGetIdentity, pluginInitialize, "
+                 "pluginExecute, pluginShutdown)");
+        return false;
+    }
 
     agrPluginIdentity ident{};
-    int rc = fn(hModule, &ident);
+    int rc = get_identity(toHandle(mod), &ident);
     if (rc != AGR_PLUGIN_ERROR_NONE) {
-        // Record the error but still store whatever we got
-        state.last_error.code = static_cast<agrPluginErrorCode>(rc);
-        // Try to get an English message
-        agrPluginError err{};
-        agrPluginGetErrorFn get_err = (agrPluginGetErrorFn)GetProcAddress(hModule, "pluginGetError");
-        if (get_err) {
-            get_err(hModule, &err);
-            state.last_error.message = err.message;
-        } else {
-            state.last_error.message = "pluginGetIdentity failed";
+        setError(s, static_cast<uint32_t>(rc), "pluginGetIdentity failed");
+        return false;
+    }
+    s.name         = ident.name;
+    s.version      = ident.version;
+    s.type         = ident.type;
+    s.author       = ident.author;
+    s.registry_key = ident.registry_key;
+
+    auto get_caps = reinterpret_cast<agrPluginGetCapabilitiesFn>(
+        GetProcAddress(mod, "pluginGetCapabilities"));
+    if (get_caps) {
+        agrPluginCapabilityManifest manifest{};
+        if (get_caps(toHandle(mod), &manifest) == AGR_PLUGIN_ERROR_NONE) {
+            s.capabilities = manifest.capabilities;
+            s.capability_count = manifest.capability_count;
         }
-        return true; // We got something, even if it's an error
     }
-
-    // Store the identity
-    state.identity.name = ident.name ? ident.name : "unknown";
-    state.identity.version = ident.version ? ident.version : "0.0.0";
-    state.identity.type = ident.type ? ident.type : "unknown";
-    state.identity.author = ident.author ? ident.author : "unknown";
-    state.identity.registry_key = ident.registry_key ? ident.registry_key : "unknown";
-
+    setError(s, AGR_PLUGIN_ERROR_NONE, "OK");
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Internal: invoke pluginGetCapabilities and capture the result.
-// ---------------------------------------------------------------------------
-
-static bool fetch_plugin_capabilities(HMODULE hModule, PluginInternalState& state) {
-    if (!hModule) return false;
-
-    agrPluginGetCapabilitiesFn fn = (agrPluginGetCapabilitiesFn)GetProcAddress(hModule, "pluginGetCapabilities");
-    if (!fn) return false;
-
-    agrPluginCapabilityManifest manifest{};
-    int rc = fn(hModule, &manifest);
-    if (rc != AGR_PLUGIN_ERROR_NONE) {
-        state.last_error.code = static_cast<agrPluginErrorCode>(rc);
-        state.last_error.message = "pluginGetCapabilities failed";
-        return true;
-    }
-
-    state.capabilities.capabilities = manifest.capabilities;
-    state.capabilities.capability_count = manifest.capability_count;
-
-    return true;
-}
+} // namespace
 
 // ---------------------------------------------------------------------------
-// Public API (declared in a header we'll create)
+// plugin_discover()
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// plugin_discover() - Scan the plugin directory and return discovery results.
-// ---------------------------------------------------------------------------
-
 std::vector<agrPluginDiscoveryResult> plugin_discover() {
     std::vector<agrPluginDiscoveryResult> results;
 
-    ensure_cache_initialized();
-
-    // For the test plugin, we know it's at a known location relative to the
-    // executable. In production, this would scan the configured plugin directory.
-    // We'll look for the test plugin that the CBuild system will install.
-
-    // Determine plugin directory
-    std::string plugin_dir;
-    {
-        char* env_dir = nullptr;
-        size_t len = 0;
-        _dupenv_s(&env_dir, &len, "AGR_PLUGIN_DIR");
-        if (env_dir && len > 0) {
-            plugin_dir = std::string(env_dir, len);
-            std::free(env_dir);
-        } else {
-            // Default: ./plugins relative to current working directory
-            plugin_dir = "./plugins";
-        }
-    }
-
-    // Find all .dll files in the plugin directory
-    // Use Windows find first
-    WIN32_FIND_DATAA find_data{};
+    std::string plugin_dir = pluginDirFromEnv();
     std::string search_path = plugin_dir + "/*.dll";
 
+    WIN32_FIND_DATAA find_data{};
     HANDLE hFind = FindFirstFileA(search_path.c_str(), &find_data);
     if (hFind == INVALID_HANDLE_VALUE) {
-        // No .dll files found — return empty results
-        FindClose(hFind);
         return results;
     }
 
     do {
-        // Skip . and ..
         if (strcmp(find_data.cFileName, ".") == 0 ||
             strcmp(find_data.cFileName, "..") == 0) {
             continue;
@@ -250,49 +178,61 @@ std::vector<agrPluginDiscoveryResult> plugin_discover() {
         std::string filename(find_data.cFileName);
 
         agrPluginDiscoveryResult result{};
-        result.path = full_path;
-        result.filename = filename;
+        copyToField(result.path, sizeof(result.path), full_path);
+        copyToField(result.filename, sizeof(result.filename), filename);
         result.loadable = false;
         result.load_error.code = AGR_PLUGIN_ERROR_INTERNAL;
-        result.load_error.message = "unknown";
+        copyToField(result.load_error.message, sizeof(result.load_error.message),
+                    "unknown");
 
-        // Attempt to load the module (without attaching yet — just check exports)
+        PluginInternalState probe;
+        probe.path = full_path;
+        probe.filename = filename;
+
+        // NOTE: LoadLibrary executes DllMain in-process (no sandbox).
         HMODULE mod = load_plugin_module(full_path);
-        if (mod) {
-            // Check for required exports
-            agrPluginGetIdentityFn get_id = nullptr;
-            agrPluginInitializeFn get_init = nullptr;
-            agrPluginExecuteFn get_exec = nullptr;
-            agrPluginShutdownFn get_shutdown = nullptr;
-
-            bool has_required =
-                GetProcAddress(mod, "pluginGetIdentity") != nullptr &&
-                GetProcAddress(mod, "pluginInitialize") != nullptr &&
-                GetProcAddress(mod, "pluginExecute") != nullptr &&
-                GetProcAddress(mod, "pluginShutdown") != nullptr;
-
-            if (has_required) {
-                // Successfully loaded with required exports — try to fetch identity
-                if (fetch_plugin_identity(mod, plugin_cache[full_path])) {
-                    result.loadable = true;
-                    result.load_error.code = AGR_PLUGIN_ERROR_NONE;
-                    result.load_error.message = "OK";
-
-                    // Fetch capabilities too
-                    fetch_plugin_capabilities(mod, plugin_cache[full_path]);
-                }
-            }
-
-            FreeLibrary(mod);
+        if (mod && validate_module(mod, probe)) {
+            result.loadable = true;
+            result.load_error.code = AGR_PLUGIN_ERROR_NONE;
+            copyToField(result.load_error.message,
+                        sizeof(result.load_error.message), "OK");
+            copyToField(result.identity.name, sizeof(result.identity.name), probe.name);
+            copyToField(result.identity.version, sizeof(result.identity.version), probe.version);
+            copyToField(result.identity.type, sizeof(result.identity.type), probe.type);
+            copyToField(result.identity.author, sizeof(result.identity.author), probe.author);
+            copyToField(result.identity.registry_key,
+                        sizeof(result.identity.registry_key), probe.registry_key);
+        } else if (mod) {
+            result.load_error.code = static_cast<agrPluginErrorCode>(probe.last_error_code);
+            copyToField(result.load_error.message,
+                        sizeof(result.load_error.message), probe.last_error_message);
+        } else {
+            result.load_error.code = AGR_PLUGIN_ERROR_INIT_FAILED;
+            copyToField(result.load_error.message,
+                        sizeof(result.load_error.message),
+                        "LoadLibrary failed (not a valid DLL or dependency missing)");
         }
+        if (mod) FreeLibrary(mod);
 
-        if (!result.loadable) {
-            result.load_error.code = AGR_PLUGIN_ERROR_INVALID_REQUEST;
-            result.load_error.message = "Missing required exports (pluginGetIdentity, pluginInitialize, pluginExecute, pluginShutdown)";
+        // Record the probe outcome under the registry mutex.
+        {
+            std::lock_guard<std::mutex> lock(plugin_mutex);
+            auto it = plugin_cache.find(full_path);
+            if (it == plugin_cache.end()) {
+                PluginInternalState entry;
+                entry.path = full_path;
+                entry.filename = filename;
+                entry.state = agrPluginState::AGR_PLUGIN_STATE_DISCOVERED;
+                entry.last_error_code = static_cast<uint32_t>(result.load_error.code);
+                entry.last_error_message = result.load_error.message;
+                plugin_cache[full_path] = std::move(entry);
+            } else if (!it->second.loaded) {
+                it->second.last_error_code = static_cast<uint32_t>(result.load_error.code);
+                it->second.last_error_message = result.load_error.message;
+            }
         }
 
         results.push_back(result);
-
     } while (FindNextFileA(hFind, &find_data) != 0);
 
     FindClose(hFind);
@@ -300,200 +240,183 @@ std::vector<agrPluginDiscoveryResult> plugin_discover() {
 }
 
 // ---------------------------------------------------------------------------
-// plugin_load() - Load a specific plugin by path, validate, and register.
-// Returns the internal state index, or -1 on failure.
+// plugin_load()
 // ---------------------------------------------------------------------------
-
 int plugin_load(const std::string& path) {
     std::lock_guard<std::mutex> lock(plugin_mutex);
 
-    // Check if already loaded
     auto it = plugin_cache.find(path);
     if (it != plugin_cache.end() && it->second.loaded) {
-        // Already loaded and registered; just return its state
         return static_cast<int>(it->second.state);
     }
 
-    // Ensure cache is initialized (scan for .dlls)
-    ensure_cache_initialized();
-
-    // Load the module
     PluginInternalState& state = plugin_cache[path];
     state.path = path;
-
-    // Extract filename
     size_t last_slash = path.find_last_of("/\\");
-    if (last_slash != std::string::npos) {
-        state.filename = path.substr(last_slash + 1);
-    } else {
-        state.filename = path;
-    }
+    state.filename = (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
 
-    // Load the Windows module handle
     HMODULE mod = load_plugin_module(path);
     if (!mod) {
-        state.last_error.code = AGR_PLUGIN_ERROR_INIT_FAILED;
-        state.last_error.message = "Failed to load module: " + path;
-        state.state = agrPluginState::UNLOADED;
+        state.module_handle = nullptr;
+        state.state = agrPluginState::AGR_PLUGIN_STATE_UNLOADED;
+        setError(state, AGR_PLUGIN_ERROR_INIT_FAILED, "Failed to load module: " + path);
         return -1;
     }
-    state.module_handle = mod;
 
-    // Fetch identity
-    if (!fetch_plugin_identity(mod, state)) {
+    if (!validate_module(mod, state)) {
+        uint32_t code = state.last_error_code;
+        std::string msg = state.last_error_message;
         FreeLibrary(mod);
         state.module_handle = nullptr;
-        state.last_error.message = "Failed to fetch plugin identity";
-        state.state = agrPluginState::UNLOADED;
+        state.state = agrPluginState::AGR_PLUGIN_STATE_UNLOADED;
+        setError(state, code, msg);
         return -1;
     }
 
-    // Fetch capabilities
-    fetch_plugin_capabilities(mod, state);
-
-    // Set initial state
-    state.state = agrPluginState::LOADED;
+    state.module_handle = mod;
+    state.state = agrPluginState::AGR_PLUGIN_STATE_LOADED;
     state.loaded = true;
 
-    // Attempt to initialize the plugin engine
-    agrPluginInitializeFn init_fn = (agrPluginInitializeFn)GetProcAddress(mod, "pluginInitialize");
-    if (init_fn) {
-        int rc = init_fn(mod, &state.identity, nullptr);
-        if (rc == AGR_PLUGIN_ERROR_NONE) {
-            state.state = agrPluginState::INITIALIZED;
-        } else {
-            state.last_error.code = static_cast<agrPluginErrorCode>(rc);
-            state.last_error.message = "pluginInitialize failed: " + std::string(state.last_error.message);
-            // Don't fail entirely — the plugin is still usable at a basic level
-            state.state = agrPluginState::LOADED;
-        }
+    // Initialize the plugin engine.
+    auto init_fn = reinterpret_cast<agrPluginInitializeFn>(
+        GetProcAddress(mod, "pluginInitialize"));
+    void* engine_ctx = nullptr;
+    int rc = init_fn(toHandle(mod), nullptr, &engine_ctx);
+    if (rc == AGR_PLUGIN_ERROR_NONE) {
+        state.initialized = true;
+        state.state = agrPluginState::AGR_PLUGIN_STATE_INITIALIZED;
+        setError(state, AGR_PLUGIN_ERROR_NONE, "OK");
     } else {
-        // No initialize function — treat as already initialized
-        state.state = agrPluginState::LOADED;
+        // Plugin loaded and is queryable but its engine failed to start.
+        state.initialized = false;
+        state.state = agrPluginState::AGR_PLUGIN_STATE_LOADED;
+        setError(state, static_cast<uint32_t>(rc),
+                 "pluginInitialize failed with code " + std::to_string(rc));
+        // Still a successful *load*: the caller can inspect the error and
+        // retry; the plugin is not executable in this state.
     }
 
-    // Register with the ExecutionEngineRegistry if the plugin reports a compatible key
-    // (This is a best-effort registration; the host's main registry may have
-    // its own rules for which keys to accept.)
-    ExecutionEngineRegistry& reg = ExecutionEngineRegistry::instance();
-
-    // Only register if the plugin's registry_key is not already taken
-    if (reg.isRegistered(state.identity.registry_key) == false) {
-        // Create a factory that delegates to this plugin's entry points
-        auto factory = [](void) -> std::shared_ptr<IExecutionEngine> {
-            // We cannot fully construct an IExecutionEngine from the plugin alone
-            // without the host knowing the internal layout. Instead, we merely
-            // record the plugin as available; the runtime's backend selector will
-            // decide whether to use it based on capabilities.
-            // For now, just log the registration intent.
-            // TODO: Full integration would require a thin wrapper engine.
-            (void)reg;
-            return nullptr; // Placeholder — not fully registered as an IExecutionEngine yet
-        };
-
-        // Register with a key based on the plugin's reported name + version
-        std::string reg_key = state.identity.name + "_" + state.identity.version;
-        // Check for conflicts
-        if (!reg.isRegistered(reg_key)) {
-            reg.registerFactory(reg_key,
-                "Plugin: " + state.identity.name + " " + state.identity.version,
-                factory);
-            state.state = agrPluginState::REGISTERED;
-        }
-    }
-
+    // NOTE: no ExecutionEngineRegistry registration. A loaded plugin is not
+    // an IExecutionEngine; representing it as one was incorrect. Execution
+    // goes through plugin_execute() below.
     return static_cast<int>(state.state);
 }
 
 // ---------------------------------------------------------------------------
-// plugin_unload() - Unload a previously loaded plugin.
-// Safe to call even if the plugin is not loaded (no-op).
+// plugin_execute()
 // ---------------------------------------------------------------------------
+int plugin_execute(const std::string& path, const void* ctx, void* outResult) {
+    std::lock_guard<std::mutex> lock(plugin_mutex);
 
+    auto it = plugin_cache.find(path);
+    if (it == plugin_cache.end() || !it->second.loaded) {
+        return -1; // not loaded
+    }
+    PluginInternalState& state = it->second;
+
+    auto exec_fn = reinterpret_cast<agrPluginExecuteFn>(
+        GetProcAddress(state.module_handle, "pluginExecute"));
+    if (!exec_fn) {
+        setError(state, AGR_PLUGIN_ERROR_INIT_FAILED,
+                 "pluginExecute export disappeared");
+        return -1;
+    }
+
+    uint32_t rc = static_cast<uint32_t>(
+        exec_fn(toHandle(state.module_handle), ctx, outResult));
+    if (rc != AGR_PLUGIN_ERROR_NONE) {
+        setError(state, rc, "pluginExecute failed with code " + std::to_string(rc));
+    }
+    return static_cast<int>(rc);
+}
+
+// ---------------------------------------------------------------------------
+// plugin_unload()
+// ---------------------------------------------------------------------------
 void plugin_unload(const std::string& path) {
     std::lock_guard<std::mutex> lock(plugin_mutex);
 
     auto it = plugin_cache.find(path);
-    if (it == plugin_cache.end()) return; // Nothing to unload
+    if (it == plugin_cache.end()) return;
 
     PluginInternalState& state = it->second;
+    if (!state.loaded && !state.module_handle) {
+        state.state = agrPluginState::AGR_PLUGIN_STATE_UNLOADED;
+        return;
+    }
 
-    // If there's an engine context, shut it down first
-    if (state.initialized) {
-        agrPluginShutdownFn shutdown_fn = (agrPluginShutdownFn)GetProcAddress(state.module_handle, "pluginShutdown");
+    if (state.initialized && state.module_handle) {
+        auto shutdown_fn = reinterpret_cast<agrPluginShutdownFn>(
+            GetProcAddress(state.module_handle, "pluginShutdown"));
         if (shutdown_fn) {
-            shutdown_fn(state.module_handle);
+            shutdown_fn(toHandle(state.module_handle));
         }
         state.initialized = false;
     }
 
-    // Mark as unloaded
     if (state.module_handle) {
         FreeLibrary(state.module_handle);
         state.module_handle = nullptr;
     }
     state.loaded = false;
-    state.state = agrPluginState::UNLOADED;
-
-    // Deregister from the engine registry
-    // (Best-effort — we don't remove the factory to avoid disturbing other engines)
-    // The factory remains; the runtime just won't select this plugin again
-    // unless explicitly re-registered.
+    state.state = agrPluginState::AGR_PLUGIN_STATE_UNLOADED;
 }
 
 // ---------------------------------------------------------------------------
-// plugin_get_state() - Query the current state of a loaded plugin.
+// plugin_get_state()
 // ---------------------------------------------------------------------------
-
 agrPluginState plugin_get_state(const std::string& path) {
     std::lock_guard<std::mutex> lock(plugin_mutex);
-
     auto it = plugin_cache.find(path);
-    if (it == plugin_cache.end()) return agrPluginState::DISCOVERED;
-
+    if (it == plugin_cache.end()) return agrPluginState::AGR_PLUGIN_STATE_DISCOVERED;
     return it->second.state;
 }
 
 // ---------------------------------------------------------------------------
-// plugin_get_error() - Get the last error for a plugin.
+// plugin_get_error()
 // ---------------------------------------------------------------------------
-
 agrPluginError plugin_get_error(const std::string& path) {
     std::lock_guard<std::mutex> lock(plugin_mutex);
 
-    agrPluginError result{ .ok = true, .message = "" };
+    agrPluginError result{};
+    result.code = AGR_PLUGIN_ERROR_INTERNAL;
+    copyToField(result.message, sizeof(result.message), "Plugin not loaded: " + path);
 
     auto it = plugin_cache.find(path);
-    if (it == plugin_cache.end()) {
-        result.ok = false;
-        result.message = "Plugin not loaded: " + path;
-        return result;
-    }
+    if (it == plugin_cache.end()) return result;
 
-    auto& state = it->second;
-    result.code = state.last_error.code;
-    result.message = state.last_error.message;
-    result.ok = (state.last_error.code == AGR_PLUGIN_ERROR_NONE);
-
+    result.code = static_cast<agrPluginErrorCode>(it->second.last_error_code);
+    copyToField(result.message, sizeof(result.message), it->second.last_error_message);
     return result;
 }
 
 // ---------------------------------------------------------------------------
-// plugin_list_loaded() - Return paths of all currently loaded plugins.
+// plugin_get_identity()
 // ---------------------------------------------------------------------------
+bool plugin_get_identity(const std::string& path, agrPluginIdentity* out) {
+    if (!out) return false;
+    std::lock_guard<std::mutex> lock(plugin_mutex);
+    auto it = plugin_cache.find(path);
+    if (it == plugin_cache.end() || !it->second.loaded) return false;
 
+    copyToField(out->name, sizeof(out->name), it->second.name);
+    copyToField(out->version, sizeof(out->version), it->second.version);
+    copyToField(out->type, sizeof(out->type), it->second.type);
+    copyToField(out->author, sizeof(out->author), it->second.author);
+    copyToField(out->registry_key, sizeof(out->registry_key), it->second.registry_key);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// plugin_list_loaded()
+// ---------------------------------------------------------------------------
 std::vector<std::string> plugin_list_loaded() {
     std::lock_guard<std::mutex> lock(plugin_mutex);
-
     std::vector<std::string> loaded;
     for (const auto& [path, state] : plugin_cache) {
-        if (state.loaded) {
-            loaded.push_back(path);
-        }
+        if (state.loaded) loaded.push_back(path);
     }
     return loaded;
 }
 
-// ============================================================================
-// End of PluginLoader.cpp
-// ============================================================================
+} // namespace agr

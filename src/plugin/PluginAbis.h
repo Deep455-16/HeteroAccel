@@ -105,6 +105,15 @@ typedef enum {
 // Linkage: __stdcall on Windows (matches GetProcAddress conventions).
 
 // ---------------------------------------------------------------------------
+// pluginGetAbiVersion()
+// REQUIRED. Returns the AGR_PLUGIN_ABI_VERSION the plugin was built against.
+// The host rejects plugins whose version differs from
+// AGR_HOST_EXPECTED_ABI_VERSION BEFORE calling any other entry point, so a
+// plugin built against an incompatible struct layout is never invoked.
+// ---------------------------------------------------------------------------
+typedef uint32_t (__stdcall *agrPluginGetAbiVersionFn)(void);
+
+// ---------------------------------------------------------------------------
 // pluginGetIdentity()
 // Called once after the module is loaded (before pluginInitialize()).
 // The host provides a buffer where the plugin must write its identity.

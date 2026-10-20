@@ -166,3 +166,35 @@ set_tests_properties(
     test_p17_real_model
     PROPERTIES SKIP_RETURN_CODE 77
 )
+
+# Phase 18/19 - Plugin system (discovery, ABI negotiation, lifecycle)
+agr_add_test(test_p18_plugin test_p18_plugin.cpp)
+target_link_libraries(test_p18_plugin PRIVATE agr_plugin)
+target_compile_definitions(test_p18_plugin PRIVATE
+    AGR_TEST_PLUGIN_DIR="$<TARGET_FILE_DIR:hydroxl_test_plugin>"
+)
+
+# Phase 19 - Dequantization validated against the bundled GGML reference.
+# The test links the real ggml library and calls its quantize_row_*_ref /
+# dequantize_row_* functions directly (no transcribed reference code).
+agr_add_test(test_p19_dequant_ref test_p19_dequant_ref.cpp)
+target_link_libraries(test_p19_dequant_ref PRIVATE ggml)
+target_include_directories(test_p19_dequant_ref PRIVATE
+    ${llama_cpp_SOURCE_DIR}/ggml/src
+    ${llama_cpp_SOURCE_DIR}/ggml/include
+)
+
+# Phase 19 - GGUF parser robustness + byte-level BPE tokenizer on a
+# synthetic GGUF file whose tensors are quantized by the real ggml library.
+agr_add_test(test_p19_gguf_tokenizer test_p19_gguf_tokenizer.cpp)
+target_link_libraries(test_p19_gguf_tokenizer PRIVATE ggml)
+target_include_directories(test_p19_gguf_tokenizer PRIVATE
+    ${llama_cpp_SOURCE_DIR}/ggml/src
+    ${llama_cpp_SOURCE_DIR}/ggml/include
+)
+
+# Ensure the plugin DLLs are built before the plugin test runs.
+add_dependencies(test_p18_plugin hydroxl_test_plugin test_plugin_badabi)
+set_tests_properties(test_p18_plugin PROPERTIES
+    DEPENDS "hydroxl_test_plugin;test_plugin_badabi"
+)

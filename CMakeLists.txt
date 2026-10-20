@@ -447,6 +447,38 @@ set(INSTALLED_PLUGINS
 # untouched; new plugins are added alongside it.
 
 # ---------------------------------------------------------------------------
+# Plugin loader (host side, Phase 19)
+# ---------------------------------------------------------------------------
+# Compiled from src/plugin/PluginLoader.cpp into its own static library.
+# A loaded plugin is NOT an IExecutionEngine: the loader validates ABI
+# version, exports and identity, and the host invokes plugin entry points
+# through the plugin_execute() API. Native plugins run in-process without
+# sandboxing (see PluginLoader.h).
+add_library(agr_plugin STATIC src/plugin/PluginLoader.cpp)
+target_include_directories(agr_plugin PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# --- Negative-control plugin: reports a mismatched ABI version ---
+add_library(test_plugin_badabi SHARED tests/test_plugin_badabi.cpp)
+set_target_properties(test_plugin_badabi PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(test_plugin_badabi PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+if(MSVC)
+    target_compile_definitions(test_plugin_badabi PRIVATE "AGR_PLUGIN_BUILDING_DLL")
+endif()
+# Place it next to the good plugin so the plugin tests can discover both.
+add_custom_command(TARGET test_plugin_badabi POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:test_plugin_badabi>"
+        "$<TARGET_FILE_DIR:hydroxl_test_plugin>/test_plugin_badabi.dll"
+    COMMENT "Copy bad-ABI plugin next to the good test plugin"
+    VERBATIM
+)
+
+# ---------------------------------------------------------------------------
 # Test suite registration
 # ---------------------------------------------------------------------------
 include(CTest)
