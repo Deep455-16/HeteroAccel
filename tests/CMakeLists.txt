@@ -198,3 +198,18 @@ add_dependencies(test_p18_plugin hydroxl_test_plugin test_plugin_badabi)
 set_tests_properties(test_p18_plugin PROPERTIES
     DEPENDS "hydroxl_test_plugin;test_plugin_badabi"
 )
+# Phase 20 - Maturation, Optimization, and Validation
+agr_add_test(test_p20_context_validation test_p20_context_validation.cpp)
+agr_add_test(test_p20_benchmark          test_p20_benchmark.cpp)
+
+if(WIN32)
+    target_link_libraries(test_p20_benchmark PRIVATE psapi)
+endif()
+
+set_tests_properties(
+    test_p20_context_validation
+    test_p20_benchmark
+    PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+)

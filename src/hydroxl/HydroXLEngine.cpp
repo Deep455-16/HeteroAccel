@@ -74,8 +74,10 @@ bool HydroXLEngine::initialize() {
 void HydroXLEngine::shutdown() {
     std::lock_guard<std::mutex> lk(mutex_);
     if (!initialized_) return;
-    if (model_)    model_->~HydroXLModel(),    new(model_.get())    hydroxl::HydroXLModel();
-    if (kv_cache_) kv_cache_->reset();
+    model_        = std::make_unique<hydroxl::HydroXLModel>();
+    tokenizer_    = std::make_unique<hydroxl::HydroXLTokenizer>();
+    kv_cache_     = std::make_unique<hydroxl::HydroXLKVCache>();
+    forward_pass_ = std::make_unique<hydroxl::HydroXLForwardPass>();
     model_loaded_ = false;
     initialized_  = false;
 }
@@ -218,6 +220,19 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
 
     auto t_tok1 = std::chrono::steady_clock::now();
 
+    // ---- Determine context window limit ----
+    uint32_t effective_limit = kv_cache_->maxSeqLen();
+    if (ctx.n_ctx > 0 && static_cast<uint32_t>(ctx.n_ctx) < effective_limit) {
+        effective_limit = static_cast<uint32_t>(ctx.n_ctx);
+    }
+
+    if (prompt_tokens.size() > effective_limit) {
+        result.success = false;
+        result.error   = "Prompt exceeds max_seq_len";
+        last_error_    = EngineError::make(EngineErrorKind::INVALID_REQUEST, result.error);
+        return result;
+    }
+
     // ---- Reset KV cache for new conversation ----
     kv_cache_->reset();
 
@@ -233,7 +248,7 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
             last_error_    = EngineError::make(EngineErrorKind::CANCELLED, result.error);
             return result;
         }
-        if (pos >= kv_cache_->maxSeqLen()) {
+        if (pos >= effective_limit) {
             result.success = false;
             result.error   = "Prompt exceeds max_seq_len";
             return result;
@@ -278,7 +293,7 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
             last_error_    = EngineError::make(EngineErrorKind::CANCELLED, result.error);
             return result;
         }
-        if (pos >= kv_cache_->maxSeqLen()) break;
+        if (pos >= effective_limit) break;
 
         // Sample next token
         hydroxl::TokenID next_tok = sampler.sample(

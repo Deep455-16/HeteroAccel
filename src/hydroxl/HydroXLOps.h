@@ -80,7 +80,8 @@ bool causal_attention(const float* q,
                       uint32_t n_kv_heads,
                       uint32_t head_dim,
                       uint32_t max_seq_len,
-                      float scale) noexcept;
+                      float scale,
+                      float* scratch_scores = nullptr) noexcept;
 
 } // namespace hydroxl
 } // namespace agr

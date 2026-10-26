@@ -32,8 +32,9 @@ TokenID HydroXLSampler::sample(const float* logits, uint32_t vocab_size,
                                 const std::vector<TokenID>& past_tokens) {
     if (!logits || vocab_size == 0) return TOKEN_INVALID;
 
-    // ---- Make a mutable copy ----
-    std::vector<float> scores(logits, logits + vocab_size);
+    // ---- Make a mutable copy (reusing scratch buffer) ----
+    scores_.assign(logits, logits + vocab_size);
+    std::vector<float>& scores = scores_;
 
     // ---- Repetition penalty ----
     if (params_.repeat_penalty != 1.0f && !past_tokens.empty()) {
@@ -64,9 +65,12 @@ TokenID HydroXLSampler::sample(const float* logits, uint32_t vocab_size,
     for (auto& s : scores) s /= sum;
 
     // ---- Top-K filtering ----
-    // Build index vector sorted by descending probability
-    std::vector<uint32_t> indices(vocab_size);
-    std::iota(indices.begin(), indices.end(), 0u);
+    // Build index vector sorted by descending probability (reusing scratch buffer)
+    if (indices_.size() != vocab_size) {
+        indices_.resize(vocab_size);
+    }
+    std::iota(indices_.begin(), indices_.end(), 0u);
+    std::vector<uint32_t>& indices = indices_;
 
     int k = (params_.top_k > 0 && params_.top_k < static_cast<int>(vocab_size))
                 ? params_.top_k

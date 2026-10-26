@@ -61,9 +61,24 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
         return false;
     }
 
-    // Compute actual element count
+    // Bounds validation on shape
+    if (desc->shape.empty()) {
+        last_error_ = "Tensor '" + name + "' has empty shape";
+        return false;
+    }
+
     uint64_t n_elems = 1;
-    for (auto d : desc->shape) n_elems *= d;
+    for (auto d : desc->shape) {
+        if (d == 0) {
+            last_error_ = "Tensor '" + name + "' has 0 dimension";
+            return false;
+        }
+        if (n_elems > UINT64_MAX / d) {
+            last_error_ = "Tensor '" + name + "' element count overflow";
+            return false;
+        }
+        n_elems *= d;
+    }
 
     if (expected_elems > 0 && n_elems != expected_elems) {
         last_error_ = "Tensor '" + name + "' has " + std::to_string(n_elems) +
@@ -71,41 +86,53 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
         return false;
     }
 
+    // Validate minimum required byte count against buffer size
+    uint64_t min_bytes = 0;
+    switch (desc->type) {
+    case GGMLType::F32:  min_bytes = n_elems * sizeof(float); break;
+    case GGMLType::F16:  min_bytes = n_elems * 2; break;
+    case GGMLType::Q4_K: min_bytes = (n_elems / Q4K_BLOCK_SIZE) * Q4K_RAW_BLOCK_BYTES; break;
+    case GGMLType::Q3_K: min_bytes = (n_elems / Q3K_BLOCK_SIZE) * Q3K_RAW_BLOCK_BYTES; break;
+    case GGMLType::Q8_0: min_bytes = (n_elems / Q8_0_BLOCK_SIZE) * Q8_0_BLOCK_BYTES; break;
+    case GGMLType::Q5_0: min_bytes = (n_elems / 32) * 22; break;
+    case GGMLType::Q5_1: min_bytes = (n_elems / 32) * 24; break;
+    case GGMLType::Q6_K: min_bytes = (n_elems / 256) * 210; break;
+    default: break;
+    }
+    if (min_bytes > 0 && desc->n_bytes < min_bytes) {
+        last_error_ = "Tensor '" + name + "' disk size " + std::to_string(desc->n_bytes) +
+                      " < minimum expected " + std::to_string(min_bytes);
+        return false;
+    }
+
     // Allocate output
     out.resize(static_cast<size_t>(n_elems));
 
+    // Reusable scratch buffer for raw quantized bytes
+    if (raw_buf_.size() < desc->n_bytes) {
+        raw_buf_.resize(static_cast<size_t>(desc->n_bytes));
+    }
+    if (!gguf.readTensorData(*desc, raw_buf_.data(), desc->n_bytes)) {
+        last_error_ = "IO error reading tensor '" + name + "'";
+        return false;
+    }
+
     switch (desc->type) {
     case GGMLType::F32: {
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "'";
-            return false;
-        }
-        std::memcpy(out.data(), raw.data(), n_elems * 4);
+        std::memcpy(out.data(), raw_buf_.data(), n_elems * sizeof(float));
         break;
     }
     case GGMLType::F16: {
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (F16)";
-            return false;
-        }
-        dequant_f16(raw.data(), out.data(), n_elems);
+        dequant_f16(raw_buf_.data(), out.data(), n_elems);
         break;
     }
-    case GGMLType::Q4_K:
-    {
+    case GGMLType::Q4_K: {
         if (n_elems % Q4K_BLOCK_SIZE != 0) {
             last_error_ = "Tensor '" + name + "' n_elems=" + std::to_string(n_elems)
                         + " not divisible by " + std::to_string(Q4K_BLOCK_SIZE);
             return false;
         }
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (Q4_K)";
-            return false;
-        }
-        if (!dequant_q4k(raw.data(), out.data(), n_elems)) {
+        if (!dequant_q4k(raw_buf_.data(), out.data(), n_elems)) {
             last_error_ = "Dequant failed for tensor '" + name + "'";
             return false;
         }
@@ -117,12 +144,7 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
                           std::to_string(Q8_0_BLOCK_SIZE);
             return false;
         }
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (Q8_0)";
-            return false;
-        }
-        if (!dequant_q8_0(raw.data(), out.data(), n_elems)) {
+        if (!dequant_q8_0(raw_buf_.data(), out.data(), n_elems)) {
             last_error_ = "Q8_0 dequant failed for tensor '" + name + "'";
             return false;
         }
@@ -133,12 +155,7 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
             last_error_ = "Tensor '" + name + "' n_elems not divisible by 256";
             return false;
         }
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (Q6_K)";
-            return false;
-        }
-        if (!dequant_q6_k(raw.data(), out.data(), n_elems)) {
+        if (!dequant_q6_k(raw_buf_.data(), out.data(), n_elems)) {
             last_error_ = "Q6_K dequant failed for tensor '" + name + "'";
             return false;
         }
@@ -149,12 +166,7 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
             last_error_ = "Tensor '" + name + "' n_elems not divisible by 32";
             return false;
         }
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (Q5_0)";
-            return false;
-        }
-        if (!dequant_q5_0(raw.data(), out.data(), n_elems)) {
+        if (!dequant_q5_0(raw_buf_.data(), out.data(), n_elems)) {
             last_error_ = "Q5_0 dequant failed for tensor '" + name + "'";
             return false;
         }
@@ -165,12 +177,7 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
             last_error_ = "Tensor '" + name + "' n_elems not divisible by 32";
             return false;
         }
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (Q5_1)";
-            return false;
-        }
-        if (!dequant_q5_1(raw.data(), out.data(), n_elems)) {
+        if (!dequant_q5_1(raw_buf_.data(), out.data(), n_elems)) {
             last_error_ = "Q5_1 dequant failed for tensor '" + name + "'";
             return false;
         }
@@ -182,12 +189,7 @@ bool HydroXLModel::loadTensor(GGUFLoader& gguf, const std::string& name,
                           std::to_string(Q3K_BLOCK_SIZE);
             return false;
         }
-        std::vector<uint8_t> raw(desc->n_bytes);
-        if (!gguf.readTensorData(*desc, raw.data(), desc->n_bytes)) {
-            last_error_ = "IO error reading tensor '" + name + "' (Q3_K)";
-            return false;
-        }
-        if (!dequant_q3k(raw.data(), out.data(), n_elems)) {
+        if (!dequant_q3k(raw_buf_.data(), out.data(), n_elems)) {
             last_error_ = "Q3_K dequant failed for tensor '" + name + "'";
             return false;
         }
@@ -247,8 +249,12 @@ bool HydroXLModel::load(const std::string& path) {
     if (!loadTensor(gguf, "output.weight",
                     static_cast<uint64_t>(hp.vocab_size) * hp.n_embd,
                     lm_head_)) {
-        // Tied embedding
-        lm_head_ = tok_embd_;
+        // Tied embedding: share tok_embd_ without duplicating hundreds of megabytes
+        lm_head_tied_ = true;
+        lm_head_.clear();
+        lm_head_.shrink_to_fit();
+    } else {
+        lm_head_tied_ = false;
     }
 
     // --- Transformer layers ---
@@ -294,6 +300,10 @@ bool HydroXLModel::load(const std::string& path) {
             return false;
         }
     }
+
+    // Release scratch buffer used during loading
+    raw_buf_.clear();
+    raw_buf_.shrink_to_fit();
 
     loaded_ = true;
     return true;

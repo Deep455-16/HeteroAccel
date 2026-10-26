@@ -270,6 +270,10 @@ bool GGUFLoader::parseTensors() {
         // n_dims
         uint32_t n_dims = 0;
         if (!readRaw(n_dims)) return false;
+        if (n_dims == 0) {
+            last_error_ = "Tensor '" + desc.name + "' has 0 dimensions";
+            return false;
+        }
         if (n_dims > 4) {
             last_error_ = "Tensor '" + desc.name + "' has " +
                           std::to_string(n_dims) + " dims (max 4)";
@@ -278,13 +282,23 @@ bool GGUFLoader::parseTensors() {
 
         // Dimensions (innermost = dim[0])
         desc.shape.resize(n_dims);
+        uint64_t n_elems = 1;
         for (uint32_t d = 0; d < n_dims; ++d) {
             if (!readRaw(desc.shape[d])) return false;
+            if (desc.shape[d] == 0) {
+                last_error_ = "Tensor '" + desc.name + "' dim[" + std::to_string(d) + "] is 0";
+                return false;
+            }
             if (desc.shape[d] > (1ull << 32)) {
                 last_error_ = "Tensor '" + desc.name + "' dim[" + std::to_string(d) +
                               "] = " + std::to_string(desc.shape[d]) + " is too large";
                 return false;
             }
+            if (n_elems > UINT64_MAX / desc.shape[d]) {
+                last_error_ = "Tensor '" + desc.name + "' element count overflow";
+                return false;
+            }
+            n_elems *= desc.shape[d];
         }
 
         // Type
@@ -296,14 +310,13 @@ bool GGUFLoader::parseTensors() {
         if (!readRaw(desc.offset)) return false;
 
         // Compute n_bytes based on type and shape
-        uint64_t n_elems = 1;
-        for (auto d : desc.shape) n_elems *= d;
-
         switch (desc.type) {
         case GGMLType::F32:
+            if (n_elems > UINT64_MAX / 4) { last_error_ = "n_bytes overflow for F32"; return false; }
             desc.n_bytes = n_elems * 4;
             break;
         case GGMLType::F16:
+            if (n_elems > UINT64_MAX / 2) { last_error_ = "n_bytes overflow for F16"; return false; }
             desc.n_bytes = n_elems * 2;
             break;
         case GGMLType::Q4_0:
@@ -433,6 +446,7 @@ bool GGUFLoader::readTensorData(const GGUFTensorDesc& desc,
     if (desc.offset > file_size_ || desc.n_bytes > file_size_ - desc.offset) {
         return false;
     }
+    if (desc.offset > UINT64_MAX - data_offset_) return false;
     uint64_t file_offset = data_offset_ + desc.offset;
     if (file_offset > file_size_ || desc.n_bytes > file_size_ - file_offset) {
         return false;

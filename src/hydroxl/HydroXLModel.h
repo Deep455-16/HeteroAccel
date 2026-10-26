@@ -80,7 +80,8 @@ public:
     const Qwen2HParams&          hparams() const { return hparams_; }
     const std::vector<float>&    tokenEmbedding() const { return tok_embd_; }
     const std::vector<float>&    outputNorm()    const { return output_norm_; }
-    const std::vector<float>&    lmHead()        const { return lm_head_; }
+    const std::vector<float>&    lmHead()        const { return lm_head_tied_ ? tok_embd_ : lm_head_; }
+    bool                         isLmHeadTied()  const { return lm_head_tied_; }
     const Qwen2LayerWeights&     layer(uint32_t l) const { return layers_.at(l); }
 
     const std::string& path()      const { return path_; }
@@ -96,6 +97,8 @@ private:
 
     std::string path_;
     bool loaded_ = false;
+    bool lm_head_tied_ = false;
+    std::vector<uint8_t> raw_buf_;
 
     Qwen2HParams hparams_;
     std::vector<float> tok_embd_;     ///< [vocab_size * n_embd]

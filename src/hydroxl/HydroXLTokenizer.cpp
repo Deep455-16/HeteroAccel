@@ -348,29 +348,39 @@ std::vector<TokenID> HydroXLTokenizer::bpe(const std::string& piece) const {
 
     // Repeatedly merge the lowest-rank adjacent pair (all occurrences,
     // left to right), exactly like the reference GPT-2 implementation.
+    std::string pair_buf;
+    pair_buf.reserve(64);
+
     while (symbols.size() > 1) {
         int best_rank = std::numeric_limits<int>::max();
-        std::string best_pair;
+        size_t best_idx = std::string::npos;
+        std::string best_left, best_right;
+
         for (size_t s = 0; s + 1 < symbols.size(); ++s) {
-            auto it = merge_rank_.find(symbols[s] + " " + symbols[s + 1]);
+            pair_buf.assign(symbols[s]);
+            pair_buf.push_back(' ');
+            pair_buf.append(symbols[s + 1]);
+
+            auto it = merge_rank_.find(pair_buf);
             if (it != merge_rank_.end() && it->second < best_rank) {
-                best_rank = it->second;
-                best_pair = symbols[s] + " " + symbols[s + 1];
+                best_rank  = it->second;
+                best_idx   = s;
+                best_left  = symbols[s];
+                best_right = symbols[s + 1];
             }
         }
-        if (best_pair.empty()) break; // no more merges apply
+        if (best_idx == std::string::npos) break; // no more merges apply
 
-        const std::string left  = best_pair.substr(0, best_pair.find(' '));
-        const std::string right = best_pair.substr(best_pair.find(' ') + 1);
+        std::string merged = best_left + best_right;
         std::vector<std::string> next;
         next.reserve(symbols.size() - 1);
         for (size_t s = 0; s < symbols.size(); ) {
             if (s + 1 < symbols.size() &&
-                symbols[s] == left && symbols[s + 1] == right) {
-                next.push_back(left + right);
+                symbols[s] == best_left && symbols[s + 1] == best_right) {
+                next.push_back(merged);
                 s += 2;
             } else {
-                next.push_back(symbols[s]);
+                next.push_back(std::move(symbols[s]));
                 s += 1;
             }
         }

@@ -67,6 +67,7 @@ private:
     std::vector<float> up_buf_;     ///< [n_ff]
     std::vector<float> ffn_buf_;    ///< [n_ff]
     std::vector<float> ffn_out_;    ///< [n_embd]
+    std::vector<float> attn_scores_;///< [max_seq_len] scratch for causal attention
 };
 
 } // namespace hydroxl

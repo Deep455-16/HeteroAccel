@@ -55,6 +55,7 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
     up_buf_.resize(n_ff);
     ffn_buf_.resize(n_ff);
     ffn_out_.resize(n_embd);
+    attn_scores_.resize(kv_cache_->maxSeqLen());
     logits.resize(vocab);
 
     // ---- Step 1: Embedding lookup ----
@@ -117,7 +118,8 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
                               seq_len,
                               n_heads, n_kv, head_dim,
                               kv_cache_->maxSeqLen(),
-                              attn_scale)) {
+                              attn_scale,
+                              attn_scores_.data())) {
             last_error_ = "causal_attention failed at layer " + std::to_string(l);
             return false;
         }

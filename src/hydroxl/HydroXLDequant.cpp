@@ -11,7 +11,11 @@
 
 #include "hydroxl/HydroXLDequant.h"
 
+#include <algorithm>
 #include <cstring>
+#include <future>
+#include <thread>
+#include <vector>
 
 namespace agr {
 namespace hydroxl {
@@ -104,18 +108,56 @@ void dequant_q4k_block(const uint8_t* raw, float* dst) noexcept {
     }
 }
 
-bool dequant_q4k(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
-    if (!raw_data || !dst || n_elements == 0) return false;
-    if (n_elements % Q4K_BLOCK_SIZE != 0) return false;
 
-    uint64_t n_blocks = n_elements / Q4K_BLOCK_SIZE;
+// ---------------------------------------------------------------------------
+// Threaded dequantization helper for large tensors (>128k elements)
+// ---------------------------------------------------------------------------
+template <typename BlockFn>
+static inline bool parallel_dequant(const void* raw_data, float* dst,
+                                     uint64_t n_elements, size_t block_size,
+                                     size_t raw_block_bytes, BlockFn&& fn) {
+    if (!raw_data || !dst || n_elements == 0) return false;
+    if (n_elements % block_size != 0) return false;
+
+    uint64_t n_blocks = n_elements / block_size;
     const uint8_t* src = static_cast<const uint8_t*>(raw_data);
 
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        dequant_q4k_block(src + b * Q4K_RAW_BLOCK_BYTES,
-                          dst  + b * Q4K_BLOCK_SIZE);
+    unsigned int hw = std::thread::hardware_concurrency();
+    uint32_t num_threads = std::min(4u, hw == 0 ? 1u : hw);
+
+    if (num_threads <= 1 || n_blocks < 256) {
+        for (uint64_t b = 0; b < n_blocks; ++b) {
+            fn(src + b * raw_block_bytes, dst + b * block_size);
+        }
+    } else {
+        uint64_t blocks_per_thread = (n_blocks + num_threads - 1) / num_threads;
+        std::vector<std::future<void>> futures;
+        futures.reserve(num_threads - 1);
+        for (uint32_t t = 1; t < num_threads; ++t) {
+            uint64_t start_b = t * blocks_per_thread;
+            uint64_t end_b   = std::min(n_blocks, start_b + blocks_per_thread);
+            if (start_b < end_b) {
+                futures.push_back(std::async(std::launch::async, [src, dst, start_b, end_b, raw_block_bytes, block_size, &fn]() {
+                    for (uint64_t b = start_b; b < end_b; ++b) {
+                        fn(src + b * raw_block_bytes, dst + b * block_size);
+                    }
+                }));
+            }
+        }
+        uint64_t end_0 = std::min(n_blocks, blocks_per_thread);
+        for (uint64_t b = 0; b < end_0; ++b) {
+            fn(src + b * raw_block_bytes, dst + b * block_size);
+        }
+        for (auto& f : futures) {
+            f.get();
+        }
     }
     return true;
+}
+bool dequant_q4k(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
+    return parallel_dequant(raw_data, dst, n_elements,
+                            Q4K_BLOCK_SIZE, Q4K_RAW_BLOCK_BYTES,
+                            dequant_q4k_block);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,17 +222,9 @@ void dequant_q3k_block(const uint8_t* raw, float* dst) noexcept {
 }
 
 bool dequant_q3k(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
-    if (!raw_data || !dst || n_elements == 0) return false;
-    if (n_elements % Q3K_BLOCK_SIZE != 0) return false;
-
-    uint64_t n_blocks = n_elements / Q3K_BLOCK_SIZE;
-    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
-
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        dequant_q3k_block(src + b * Q3K_RAW_BLOCK_BYTES,
-                          dst  + b * Q3K_BLOCK_SIZE);
-    }
-    return true;
+    return parallel_dequant(raw_data, dst, n_elements,
+                            Q3K_BLOCK_SIZE, Q3K_RAW_BLOCK_BYTES,
+                            dequant_q3k_block);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,17 +243,9 @@ void dequant_q8_0_block(const uint8_t* raw, float* dst) noexcept {
 }
 
 bool dequant_q8_0(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
-    if (!raw_data || !dst || n_elements == 0) return false;
-    if (n_elements % Q8_0_BLOCK_SIZE != 0) return false;
-
-    uint64_t n_blocks = n_elements / Q8_0_BLOCK_SIZE;
-    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
-
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        dequant_q8_0_block(src + b * Q8_0_BLOCK_BYTES,
-                           dst  + b * Q8_0_BLOCK_SIZE);
-    }
-    return true;
+    return parallel_dequant(raw_data, dst, n_elements,
+                            Q8_0_BLOCK_SIZE, Q8_0_BLOCK_BYTES,
+                            dequant_q8_0_block);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,8 +254,35 @@ bool dequant_q8_0(const void* raw_data, float* dst, uint64_t n_elements) noexcep
 void dequant_f16(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
     if (!raw_data || !dst || n_elements == 0) return;
     const uint16_t* src = static_cast<const uint16_t*>(raw_data);
-    for (uint64_t i = 0; i < n_elements; ++i) {
-        dst[i] = fp16_to_float(src[i]);
+    unsigned int hw = std::thread::hardware_concurrency();
+    uint32_t num_threads = std::min(4u, hw == 0 ? 1u : hw);
+
+    if (num_threads <= 1 || n_elements < 131072) {
+        for (uint64_t i = 0; i < n_elements; ++i) {
+            dst[i] = fp16_to_float(src[i]);
+        }
+    } else {
+        uint64_t chunk = (n_elements + num_threads - 1) / num_threads;
+        std::vector<std::future<void>> futures;
+        futures.reserve(num_threads - 1);
+        for (uint32_t t = 1; t < num_threads; ++t) {
+            uint64_t start = t * chunk;
+            uint64_t end   = std::min(n_elements, start + chunk);
+            if (start < end) {
+                futures.push_back(std::async(std::launch::async, [src, dst, start, end]() {
+                    for (uint64_t i = start; i < end; ++i) {
+                        dst[i] = fp16_to_float(src[i]);
+                    }
+                }));
+            }
+        }
+        uint64_t end_0 = std::min(n_elements, chunk);
+        for (uint64_t i = 0; i < end_0; ++i) {
+            dst[i] = fp16_to_float(src[i]);
+        }
+        for (auto& f : futures) {
+            f.get();
+        }
     }
 }
 
@@ -268,17 +321,9 @@ void dequant_q5_0_block(const uint8_t* raw, float* dst) noexcept {
 }
 
 bool dequant_q5_0(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
-    if (!raw_data || !dst || n_elements == 0) return false;
-    if (n_elements % 32 != 0) return false;
-
-    uint64_t n_blocks = n_elements / 32;
-    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
-
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        dequant_q5_0_block(src + b * 22,
-                           dst  + b * 32);
-    }
-    return true;
+    return parallel_dequant(raw_data, dst, n_elements,
+                            32, 22,
+                            dequant_q5_0_block);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,17 +362,9 @@ void dequant_q5_1_block(const uint8_t* raw, float* dst) noexcept {
 }
 
 bool dequant_q5_1(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
-    if (!raw_data || !dst || n_elements == 0) return false;
-    if (n_elements % 32 != 0) return false;
-
-    uint64_t n_blocks = n_elements / 32;
-    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
-
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        dequant_q5_1_block(src + b * 24,
-                           dst  + b * 32);
-    }
-    return true;
+    return parallel_dequant(raw_data, dst, n_elements,
+                            32, 24,
+                            dequant_q5_1_block);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,17 +410,9 @@ void dequant_q6_k_block(const uint8_t* raw, float* dst) noexcept {
 }
 
 bool dequant_q6_k(const void* raw_data, float* dst, uint64_t n_elements) noexcept {
-    if (!raw_data || !dst || n_elements == 0) return false;
-    if (n_elements % 256 != 0) return false;
-
-    uint64_t n_blocks = n_elements / 256;
-    const uint8_t* src = static_cast<const uint8_t*>(raw_data);
-
-    for (uint64_t b = 0; b < n_blocks; ++b) {
-        dequant_q6_k_block(src + b * 210,
-                           dst  + b * 256);
-    }
-    return true;
+    return parallel_dequant(raw_data, dst, n_elements,
+                            256, 210,
+                            dequant_q6_k_block);
 }
 
 } // namespace hydroxl

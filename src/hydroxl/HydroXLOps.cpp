@@ -42,12 +42,23 @@ bool matvec(const float* A, const float* x, float* out,
     if (!A || !x || !out || m_rows == 0 || k_cols == 0) return false;
 
     for (uint32_t m = 0; m < m_rows; ++m) {
-        double acc = 0.0;
         const float* row = A + static_cast<size_t>(m) * k_cols;
-        for (uint32_t k = 0; k < k_cols; ++k) {
-            acc += static_cast<double>(row[k]) * static_cast<double>(x[k]);
+        float acc0 = 0.0f;
+        float acc1 = 0.0f;
+        float acc2 = 0.0f;
+        float acc3 = 0.0f;
+        uint32_t k = 0;
+        for (; k + 4 <= k_cols; k += 4) {
+            acc0 += row[k + 0] * x[k + 0];
+            acc1 += row[k + 1] * x[k + 1];
+            acc2 += row[k + 2] * x[k + 2];
+            acc3 += row[k + 3] * x[k + 3];
         }
-        out[m] = static_cast<float>(acc);
+        float acc = (acc0 + acc1) + (acc2 + acc3);
+        for (; k < k_cols; ++k) {
+            acc += row[k] * x[k];
+        }
+        out[m] = acc;
     }
     return true;
 }
@@ -181,7 +192,8 @@ bool causal_attention(const float* q,
                       uint32_t n_kv_heads,
                       uint32_t head_dim,
                       uint32_t max_seq_len,
-                      float scale) noexcept {
+                      float scale,
+                      float* scratch_scores) noexcept {
     if (!q || !k_cache || !v_cache || !out) return false;
     if (seq_len == 0 || n_heads == 0 || n_kv_heads == 0 || head_dim == 0) return false;
     if (n_heads % n_kv_heads != 0) return false;
@@ -189,10 +201,12 @@ bool causal_attention(const float* q,
 
     uint32_t heads_per_kv = n_heads / n_kv_heads;
 
-    // Allocate a temporary score buffer on the stack for small seq_len.
-    // For longer sequences, we use a static thread-local buffer.
-    // Phase 17 uses a simple heap allocation per head.
-    std::vector<float> scores(seq_len);
+    std::vector<float> local_scores;
+    float* scores_ptr = scratch_scores;
+    if (!scores_ptr) {
+        local_scores.resize(seq_len);
+        scores_ptr = local_scores.data();
+    }
 
     for (uint32_t h = 0; h < n_heads; ++h) {
         const float* qh = q + static_cast<size_t>(h) * head_dim;
@@ -211,16 +225,16 @@ bool causal_attention(const float* q,
             for (uint32_t d = 0; d < head_dim; ++d) {
                 dot += static_cast<double>(qh[d]) * static_cast<double>(kt[d]);
             }
-            scores[t] = static_cast<float>(dot) * scale;
+            scores_ptr[t] = static_cast<float>(dot) * scale;
         }
 
         // Causal mask is implicitly satisfied: seq_len only includes past + current tokens.
-        softmax_inplace(scores.data(), seq_len);
+        softmax_inplace(scores_ptr, seq_len);
 
         // Weighted sum of values: out_h = sum_t scores[t] * v_cache[kv_h, t]
         std::fill(outh, outh + head_dim, 0.0f);
         for (uint32_t t = 0; t < seq_len; ++t) {
-            float s = scores[t];
+            float s = scores_ptr[t];
             const float* vt = v_cache +
                 static_cast<size_t>(kv_h) * max_seq_len * head_dim +
                 static_cast<size_t>(t) * head_dim;

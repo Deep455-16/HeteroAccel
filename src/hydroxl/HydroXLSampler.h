@@ -40,6 +40,10 @@ private:
     uint64_t      rng_state_;
 
     float nextRandom();  ///< Uniform [0, 1)
+
+    // Reusable scratch buffers across calls to sample()
+    std::vector<float>    scores_;
+    std::vector<uint32_t> indices_;
 };
 
 } // namespace hydroxl
