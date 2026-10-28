@@ -19,42 +19,58 @@ find_package(Vulkan)
 # --- Phase 2: compile the compute shader from source at build time -------
 # Never a committed binary -- glslangValidator (or glslc) regenerates the
 # SPIR-V module from shaders/vector_add.comp on every build.
-find_program(GLSLANG_VALIDATOR NAMES glslangValidator)
+find_program(GLSLANG_VALIDATOR NAMES glslangValidator HINTS "D:/VulkanSDK/1.4.357.0/Bin")
 if(NOT GLSLANG_VALIDATOR)
-    find_program(GLSLC NAMES glslc)
+    find_program(GLSLC NAMES glslc HINTS "D:/VulkanSDK/1.4.357.0/Bin")
 endif()
 
 set(AGR_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vector_add.comp)
 set(AGR_SHADER_SPV ${CMAKE_BINARY_DIR}/shaders/vector_add.comp.spv)
+
+set(AGR_ALL_SHADERS
+    vector_add.comp
+    hydroxl_matvec.comp
+    hydroxl_rmsnorm.comp
+    hydroxl_elemwise.comp
+    hydroxl_softmax.comp
+)
+
+set(AGR_ALL_SHADER_SPVS "")
 set(AGR_HAVE_SHADER_COMPILER FALSE)
 
-if(GLSLANG_VALIDATOR)
-    add_custom_command(
-        OUTPUT ${AGR_SHADER_SPV}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-        COMMAND ${GLSLANG_VALIDATOR} -V ${AGR_SHADER_SRC} -o ${AGR_SHADER_SPV}
-        DEPENDS ${AGR_SHADER_SRC}
-        COMMENT "Compiling vector_add.comp -> SPIR-V (glslangValidator)"
-        VERBATIM
-    )
-    set(AGR_HAVE_SHADER_COMPILER TRUE)
-elseif(GLSLC)
-    add_custom_command(
-        OUTPUT ${AGR_SHADER_SPV}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-        COMMAND ${GLSLC} ${AGR_SHADER_SRC} -o ${AGR_SHADER_SPV}
-        DEPENDS ${AGR_SHADER_SRC}
-        COMMENT "Compiling vector_add.comp -> SPIR-V (glslc)"
-        VERBATIM
-    )
-    set(AGR_HAVE_SHADER_COMPILER TRUE)
-endif()
+foreach(shader IN LISTS AGR_ALL_SHADERS)
+    set(shader_src ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader})
+    set(shader_spv ${CMAKE_BINARY_DIR}/shaders/${shader}.spv)
+    list(APPEND AGR_ALL_SHADER_SPVS ${shader_spv})
+
+    if(GLSLANG_VALIDATOR)
+        add_custom_command(
+            OUTPUT ${shader_spv}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+            COMMAND ${GLSLANG_VALIDATOR} -V ${shader_src} -o ${shader_spv}
+            DEPENDS ${shader_src}
+            COMMENT "Compiling ${shader} -> SPIR-V (glslangValidator)"
+            VERBATIM
+        )
+        set(AGR_HAVE_SHADER_COMPILER TRUE)
+    elseif(GLSLC)
+        add_custom_command(
+            OUTPUT ${shader_spv}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+            COMMAND ${GLSLC} ${shader_src} -o ${shader_spv}
+            DEPENDS ${shader_src}
+            COMMENT "Compiling ${shader} -> SPIR-V (glslc)"
+            VERBATIM
+        )
+        set(AGR_HAVE_SHADER_COMPILER TRUE)
+    endif()
+endforeach()
 
 if(AGR_HAVE_SHADER_COMPILER)
-    add_custom_target(agr_shaders ALL DEPENDS ${AGR_SHADER_SPV})
+    add_custom_target(agr_shaders ALL DEPENDS ${AGR_ALL_SHADER_SPVS})
 else()
     add_custom_target(agr_shaders)
-    message(WARNING "Neither glslangValidator nor glslc was found. Phase 2's compute shader cannot be compiled -- install the Vulkan SDK (it includes both) and reconfigure.")
+    message(WARNING "Neither glslangValidator nor glslc was found. Compute shaders cannot be compiled -- install the Vulkan SDK (it includes both) and reconfigure.")
 endif()
 
 # =============================================================================
@@ -262,9 +278,11 @@ add_library(agr_hydroxl STATIC
     src/hydroxl/HydroXLModel.cpp
     src/hydroxl/HydroXLForwardPass.cpp
     src/hydroxl/HydroXLEngine.cpp
+    src/hydroxl/VulkanTensorOps.cpp
 )
 target_include_directories(agr_hydroxl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(agr_hydroxl PUBLIC agr_engine agr_core)
+add_dependencies(agr_hydroxl agr_shaders)
 
 # =============================================================================
 # agr_execution â€” Phase 15: Heterogeneous Execution Graph
@@ -333,7 +351,11 @@ add_dependencies(adaptive-gpu agr_shaders)
 # (works for both single-config and multi-config/Visual-Studio builds).
 add_custom_command(TARGET adaptive-gpu POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:adaptive-gpu>/shaders
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AGR_SHADER_SPV} $<TARGET_FILE_DIR:adaptive-gpu>/shaders/vector_add.comp.spv
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/shaders/vector_add.comp.spv $<TARGET_FILE_DIR:adaptive-gpu>/shaders/vector_add.comp.spv
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/shaders/hydroxl_matvec.comp.spv $<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_matvec.comp.spv
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/shaders/hydroxl_rmsnorm.comp.spv $<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_rmsnorm.comp.spv
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/shaders/hydroxl_elemwise.comp.spv $<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_elemwise.comp.spv
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_BINARY_DIR}/shaders/hydroxl_softmax.comp.spv $<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_softmax.comp.spv
 )
 
 # =============================================================================

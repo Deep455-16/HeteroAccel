@@ -226,3 +226,9 @@ set_tests_properties(
         SKIP_RETURN_CODE 77
         TIMEOUT 180
 )
+
+# Phase 22 - Vulkan Tensor Execution Pipeline
+agr_add_test(test_p22_vulkan_ops    test_p22_vulkan_ops.cpp)
+agr_add_test(test_p22_vulkan_engine test_p22_vulkan_engine.cpp)
+set_tests_properties(test_p22_vulkan_ops test_p22_vulkan_engine
+    PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)

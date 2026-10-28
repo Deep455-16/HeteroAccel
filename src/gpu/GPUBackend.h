@@ -20,6 +20,7 @@ struct Buffer {
 // this contract, but nothing beyond vector-add is implemented yet.
 class GPUBackend {
 public:
+    using Buffer = agr::Buffer;
     virtual ~GPUBackend() = default;
 
     // Selects a compute-capable device dynamically and brings up the

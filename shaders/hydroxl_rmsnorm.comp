@@ -1,0 +1,41 @@
+#version 450
+// HydroXL Phase 22 — RMS Normalization
+// out[i] = x[i] / rms(x) * weight[i]
+// rms(x) = sqrt(mean(x^2) + eps)
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly  buffer VecX      { float x[];      };
+layout(set = 0, binding = 1) readonly  buffer VecWeight { float weight[];  };
+layout(set = 0, binding = 2) writeonly buffer VecOut    { float result[];  };
+
+layout(push_constant) uniform PC {
+    uint  n;
+    float eps;
+} pc;
+
+shared float partials[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+
+    // Compute sum of squares
+    float ss = 0.0;
+    for (uint i = tid; i < pc.n; i += 256) {
+        float v = x[i];
+        ss += v * v;
+    }
+    partials[tid] = ss;
+    barrier();
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) partials[tid] += partials[tid + s];
+        barrier();
+    }
+
+    float rms = inversesqrt(partials[0] / float(pc.n) + pc.eps);
+
+    // Apply norm and weight
+    for (uint i = tid; i < pc.n; i += 256) {
+        result[i] = x[i] * rms * weight[i];
+    }
+}

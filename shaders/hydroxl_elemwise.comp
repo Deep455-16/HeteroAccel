@@ -1,0 +1,33 @@
+#version 450
+// HydroXL Phase 22 — Element-wise operations
+// Op selector (push constant op_type):
+//   0 = residual add:   out[i] = a[i] + b[i]
+//   1 = silu inplace:   out[i] = a[i] / (1 + exp(-a[i]))    (b unused)
+//   2 = swiglu:         out[i] = (a[i] / (1+exp(-a[i]))) * b[i]
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly  buffer BufA   { float a[];      };
+layout(set = 0, binding = 1) readonly  buffer BufB   { float b[];      };
+layout(set = 0, binding = 2) writeonly buffer BufOut { float result[]; };
+
+layout(push_constant) uniform PC {
+    uint n;
+    uint op_type;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) return;
+
+    if (pc.op_type == 0u) {
+        result[i] = a[i] + b[i];
+    } else if (pc.op_type == 1u) {
+        float v = a[i];
+        result[i] = v / (1.0 + exp(-v));
+    } else {
+        // swiglu
+        float gate = a[i];
+        result[i] = (gate / (1.0 + exp(-gate))) * b[i];
+    }
+}

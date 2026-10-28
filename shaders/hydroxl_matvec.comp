@@ -1,0 +1,42 @@
+#version 450
+// HydroXL Phase 22 — Matrix-Vector Multiply
+// out[row] = dot(A[row, :], x[:])
+// A is row-major [m_rows x k_cols], x is [k_cols], out is [m_rows].
+// One workgroup per output row.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly  buffer MatA { float a[]; };
+layout(set = 0, binding = 1) readonly  buffer VecX { float x[]; };
+layout(set = 0, binding = 2) writeonly buffer VecOut { float result[]; };
+
+layout(push_constant) uniform PC {
+    uint m_rows;
+    uint k_cols;
+} pc;
+
+shared float partials[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+
+    if (row >= pc.m_rows) return;
+
+    float sum = 0.0;
+    uint base = row * pc.k_cols;
+    for (uint k = tid; k < pc.k_cols; k += 256) {
+        sum += a[base + k] * x[k];
+    }
+
+    partials[tid] = sum;
+    barrier();
+
+    // Parallel reduction
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) partials[tid] += partials[tid + s];
+        barrier();
+    }
+
+    if (tid == 0) result[row] = partials[0];
+}

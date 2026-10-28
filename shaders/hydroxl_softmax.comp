@@ -1,0 +1,22 @@
+#version 450
+// Softmax over x[0..n-1] in-place (one workgroup, shared memory reduction)
+layout(local_size_x = 256) in;
+layout(set=0,binding=0) buffer Buf { float x[]; };
+layout(push_constant) uniform PC { uint n; } pc;
+shared float sh[256];
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    // max reduction
+    float mx = -1e38;
+    for (uint i = tid; i < pc.n; i += 256) mx = max(mx, x[i]);
+    sh[tid] = mx; barrier();
+    for (uint s=128;s>0;s>>=1){if(tid<s)sh[tid]=max(sh[tid],sh[tid+s]);barrier();}
+    float vmax = sh[0];
+    // exp and sum
+    float sm = 0.0;
+    for (uint i = tid; i < pc.n; i += 256) { x[i] = exp(x[i] - vmax); sm += x[i]; }
+    sh[tid] = sm; barrier();
+    for (uint s=128;s>0;s>>=1){if(tid<s)sh[tid]+=sh[tid+s];barrier();}
+    float inv_sum = 1.0 / sh[0];
+    for (uint i = tid; i < pc.n; i += 256) x[i] *= inv_sum;
+}
