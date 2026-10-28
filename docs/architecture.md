@@ -27,8 +27,9 @@ adaptive-gpu-runtime/
     ├── planner/       Phase 13: ExecutionPlanner — chooses engine/backend for a request
     ├── execution/     Phase 15: ExecutionGraph — DAG of TensorComputeNodes
     ├── primitives/    Phase 16: Tensor, HostBuffer, CpuOps (native linear algebra)
-    ├── hydroxl/       Phase 17-19: HydroXL native inference engine (see below)
+    ├── hydroxl/       Phase 17-20: HydroXL native inference engine (see below)
     ├── plugin/        Phase 18-19: Dynamic engine plugin loader
+    ├── orchestration/ Phase 21: Universal hardware-aware engine orchestration (see below)
     └── cli/           Command-line interface (main.cpp)
 ```
 
@@ -114,6 +115,36 @@ Q2_K=10  Q3_K=11  Q4_K=12  Q5_K=13  Q6_K=14  Q8_K=15
 - **Primary build:** `cmake --build build --config Release`
 - **Tests:** `ctest --test-dir build -C Release`
 - **Real-model tests:** Set `HETEROACCEL_MODEL_PATH` env var to a `.gguf` file path
+
+## Orchestration Layer (`src/orchestration/`) — Phase 21
+
+The orchestration layer selects and creates the best compatible inference backend at runtime based on hardware capabilities, model requirements, and observed performance history.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `HardwareDetector.h/.cpp` | Detects CPU, Vulkan GPUs, CUDA devices, system/VRAM; mock support for tests |
+| `BackendCapabilities.h` | Backend descriptor: quant types, arch, hardware gates, throughput heuristics |
+| `EngineOrchestrator.h/.cpp` | Thread-safe selection, scoring, fallback, and performance recording |
+| `IInferenceEngine.h` | Abstract inference interface (`initialize`, `run`, `shutdown`) |
+| `HydroXLEngineAdapter.h/.cpp` | `IInferenceEngine` adapters for HydroXL CPU (working) and Vulkan (stub) |
+| `OrchestratorInit.h/.cpp` | Registers default backends (`hydroxl_cpu`, `hydroxl_vulkan`, `cuda`) at startup |
+
+### Selection Algorithm
+
+```
+select_backend(req):
+  1. forced_backend override (if set)
+  2. filter: is_available(hw) && supports_quant && supports_arch && RAM/VRAM headroom
+  3. score = (throughput × ram_headroom) / init_cost_factor + priority × 0.001
+     - throughput: perf_history if available, else relative_throughput heuristic
+     - init_cost_factor doubled if prefer_latency=true
+  4. pick highest score → return SelectionResult with reason + rejected list
+  5. fallback to hydroxl_cpu if allow_cpu_fallback and no candidate passed
+```
+
+See `docs/phase21-universal-orchestration.md` for full documentation.
 
 ## Research Archive
 

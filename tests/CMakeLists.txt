@@ -1,6 +1,6 @@
 function(agr_add_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE agr_inference agr_residency agr_execution agr_primitives agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core agr_hydroxl)
+    target_link_libraries(${test_name} PRIVATE agr_orchestration agr_inference agr_residency agr_execution agr_primitives agr_analysis agr_engine agr_model agr_scheduler agr_backend agr_llm agr_mem agr_core agr_hydroxl)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(${test_name} agr_shaders)
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -209,6 +209,19 @@ endif()
 set_tests_properties(
     test_p20_context_validation
     test_p20_benchmark
+    PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+)
+
+# Phase 21 - Universal Hardware-Aware Engine Orchestration
+agr_add_test(test_p21_hardware_detector     test_p21_hardware_detector.cpp)
+agr_add_test(test_p21_orchestrator          test_p21_orchestrator.cpp)
+agr_add_test(test_p21_backend_capabilities  test_p21_backend_capabilities.cpp)
+agr_add_test(test_p21_e2e_orchestration     test_p21_e2e_orchestration.cpp)
+
+set_tests_properties(
+    test_p21_e2e_orchestration
     PROPERTIES
         SKIP_RETURN_CODE 77
         TIMEOUT 180

@@ -326,7 +326,7 @@ target_link_libraries(agr_analysis PUBLIC agr_engine agr_backend agr_core llama)
 # adaptive-gpu â€” main CLI executable (Phase 1..13)
 # =============================================================================
 add_executable(adaptive-gpu src/cli/main.cpp)
-target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler agr_primitives agr_hydroxl)
+target_link_libraries(adaptive-gpu PRIVATE agr_core agr_llm agr_analysis agr_residency agr_execution agr_engine agr_mem agr_backend agr_scheduler agr_model agr_inference agr_profiler agr_primitives agr_hydroxl agr_orchestration)
 add_dependencies(adaptive-gpu agr_shaders)
 
 # Ship the compiled shader(s) alongside the executable for distribution
@@ -479,6 +479,20 @@ add_custom_command(TARGET test_plugin_badabi POST_BUILD
 )
 
 # ---------------------------------------------------------------------------
+# =============================================================================
+# agr_orchestration -- Phase 21: Universal Hardware-Aware Engine Orchestration
+# =============================================================================
+file(GLOB ORCHESTRATION_SRCS src/orchestration/*.cpp)
+add_library(agr_orchestration STATIC ${ORCHESTRATION_SRCS})
+target_include_directories(agr_orchestration PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/orchestration
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/hydroxl
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/engine
+)
+target_link_libraries(agr_orchestration PUBLIC agr_hydroxl agr_core agr_plugin)
+
 # Test suite registration
 # ---------------------------------------------------------------------------
 include(CTest)
