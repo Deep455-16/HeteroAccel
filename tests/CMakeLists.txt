@@ -232,3 +232,28 @@ agr_add_test(test_p22_vulkan_ops    test_p22_vulkan_ops.cpp)
 agr_add_test(test_p22_vulkan_engine test_p22_vulkan_engine.cpp)
 set_tests_properties(test_p22_vulkan_ops test_p22_vulkan_engine
     PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+
+# Phase 23 - Stable Public API and Developer SDK
+agr_add_test(test_p23_sdk_init       test_p23_sdk_init.cpp)
+target_link_libraries(test_p23_sdk_init PRIVATE agr_sdk)
+
+agr_add_test(test_p23_sdk_model      test_p23_sdk_model.cpp)
+target_link_libraries(test_p23_sdk_model PRIVATE agr_sdk)
+
+agr_add_test(test_p23_sdk_infer      test_p23_sdk_infer.cpp)
+target_link_libraries(test_p23_sdk_infer PRIVATE agr_sdk)
+
+agr_add_test(test_p23_sdk_backends   test_p23_sdk_backends.cpp)
+target_link_libraries(test_p23_sdk_backends PRIVATE agr_sdk)
+
+agr_add_test(test_p23_sdk_concurrent test_p23_sdk_concurrent.cpp)
+target_link_libraries(test_p23_sdk_concurrent PRIVATE agr_sdk)
+
+set_tests_properties(
+    test_p23_sdk_model
+    test_p23_sdk_infer
+    test_p23_sdk_concurrent
+    PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+)

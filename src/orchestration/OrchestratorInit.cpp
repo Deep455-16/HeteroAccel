@@ -25,9 +25,9 @@ void register_default_backends(EngineOrchestrator& orch, const HardwareDetector&
     if (hw.has_vulkan()) {
         BackendCapabilities vk;
         vk.backend_id = "hydroxl_vulkan";
-        // Phase 22: HydroXL dequantizes weights to float32 on CPU at model-load time,
-        // so the Vulkan backend can execute any quantization format transparently.
-        vk.supported_quant_types = {0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17};
+        // Shaders implement ops for quants 0, 1, 7, 8 directly; quant 12 (Q4_K)
+        // routes natively to CPU orchestrator target.
+        vk.supported_quant_types = {0, 1, 7, 8};
         vk.supported_arch = {"llama", "qwen2", "mistral", "phi", "gemma"};
         vk.requires_cuda = false;
         vk.requires_vulkan = true;

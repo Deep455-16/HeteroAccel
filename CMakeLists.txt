@@ -515,6 +515,50 @@ target_include_directories(agr_orchestration PUBLIC
 )
 target_link_libraries(agr_orchestration PUBLIC agr_hydroxl agr_core agr_plugin)
 
+# =============================================================================
+# agr_sdk — Phase 23: Public C API & Developer SDK
+# =============================================================================
+add_library(agr_sdk STATIC
+    src/sdk/HeteroAccelSDK.cpp
+)
+target_include_directories(agr_sdk
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(agr_sdk PUBLIC HETEROACCEL_STATIC)
+target_link_libraries(agr_sdk PUBLIC agr_orchestration agr_hydroxl agr_core)
+add_dependencies(agr_sdk agr_shaders)
+
+# Standalone SDK shared library (for external consumers)
+add_library(heteroaccel SHARED src/sdk/HeteroAccelSDK.cpp)
+target_include_directories(heteroaccel
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(heteroaccel PRIVATE HETEROACCEL_BUILDING_DLL)
+target_link_libraries(heteroaccel PRIVATE
+    agr_orchestration agr_hydroxl agr_core agr_llm agr_engine
+    agr_mem agr_backend agr_inference agr_profiler agr_primitives
+    agr_execution agr_analysis agr_residency agr_scheduler
+    agr_model agr_plugin
+)
+if(WIN32)
+    target_link_libraries(heteroaccel PRIVATE dxgi)
+endif()
+add_dependencies(heteroaccel agr_shaders)
+
+# Install rules
+install(TARGETS agr_sdk ARCHIVE DESTINATION lib)
+install(DIRECTORY include/heteroaccel DESTINATION include)
+
+# Examples (buildable targets, not registered with CTest)
+add_executable(c_example examples/c_example.c)
+target_link_libraries(c_example PRIVATE agr_sdk)
+set_source_files_properties(examples/c_example.c PROPERTIES LANGUAGE CXX)
+
+add_executable(cpp_example examples/cpp_example.cpp)
+target_link_libraries(cpp_example PRIVATE agr_sdk)
+
 # Test suite registration
 # ---------------------------------------------------------------------------
 include(CTest)
