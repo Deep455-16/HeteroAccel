@@ -202,6 +202,8 @@ Shaders in `shaders/`, compiled to SPIR-V at build time: `hydroxl_matvec.comp` (
 | 20 | HydroXL optimizations | Implemented | See below. [docs/phase20-improvements.md](docs/phase20-improvements.md) |
 | 21 | Hardware-aware orchestration | Implemented (library) | Not called from the CLI. [docs/phase21-universal-orchestration.md](docs/phase21-universal-orchestration.md) |
 | 22 | HydroXL Vulkan tensor execution | Implemented (API/test) | Iris Xe only. [docs/phase22-vulkan-execution.md](docs/phase22-vulkan-execution.md) |
+| 23 | Stable public C API and C++ RAII SDK | Implemented | ABI-stable C API (heteroaccel.h), header-only C++17 SDK (HeteroAccel.hpp), static + DLL targets. [docs/phase23-public-api-sdk.md](docs/phase23-public-api-sdk.md) |
+| 24 | Native streaming and intelligent runtime resource management | Implemented | True per-token streaming, cancellation, MemoryEstimator, persistent PerfProfile, Python bindings, CMake package. [docs/phase24-streaming-resource-management.md](docs/phase24-streaming-resource-management.md) |
 
 **Phase 20** (per its documentation): bounds and 64-bit overflow checks in GGUF/tensor loading; truncated-tensor detection; up-front context-limit rejection; tied LM-head sharing (avoids a ~544.6 MB duplicate for Qwen2.5-0.5B); reused scratch buffers in load, attention and sampling; multi-threaded dequantization via `std::async`; 4-way unrolled float `matvec`. Numbers are in [Performance](#performance).
 
