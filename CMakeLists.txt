@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(AdaptiveGPURuntime LANGUAGES CXX)
+project(AdaptiveGPURuntime VERSION 0.24.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -522,7 +522,8 @@ add_library(agr_sdk STATIC
     src/sdk/HeteroAccelSDK.cpp
 )
 target_include_directories(agr_sdk
-    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_definitions(agr_sdk PUBLIC HETEROACCEL_STATIC)
@@ -532,7 +533,8 @@ add_dependencies(agr_sdk agr_shaders)
 # Standalone SDK shared library (for external consumers)
 add_library(heteroaccel SHARED src/sdk/HeteroAccelSDK.cpp)
 target_include_directories(heteroaccel
-    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_definitions(heteroaccel PRIVATE HETEROACCEL_BUILDING_DLL)
@@ -547,9 +549,67 @@ if(WIN32)
 endif()
 add_dependencies(heteroaccel agr_shaders)
 
-# Install rules
-install(TARGETS agr_sdk ARCHIVE DESTINATION lib)
-install(DIRECTORY include/heteroaccel DESTINATION include)
+# Install & Packaging rules (Phase 24)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+add_library(HeteroAccel::heteroaccel ALIAS heteroaccel)
+
+install(TARGETS heteroaccel
+    EXPORT HeteroAccelTargets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(TARGETS agr_sdk
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(DIRECTORY include/heteroaccel
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(EXPORT HeteroAccelTargets
+    FILE HeteroAccelTargets.cmake
+    NAMESPACE HeteroAccel::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HeteroAccel
+)
+
+# Generate and install HeteroAccelConfig.cmake and version file
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/HeteroAccelConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/HeteroAccelConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HeteroAccel
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/HeteroAccelConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/HeteroAccelConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/HeteroAccelConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HeteroAccel
+)
+
+# Export targets to build directory for in-tree packaging test
+export(EXPORT HeteroAccelTargets
+    FILE ${CMAKE_CURRENT_BINARY_DIR}/HeteroAccelTargets.cmake
+    NAMESPACE HeteroAccel::
+)
+
+# Pkg-config configuration and installation
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/heteroaccel.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/heteroaccel.pc
+    @ONLY
+)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/heteroaccel.pc
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+)
 
 # Examples (buildable targets, not registered with CTest)
 add_executable(c_example examples/c_example.c)

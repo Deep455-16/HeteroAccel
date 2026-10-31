@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: HeteroAccel
+Description: Adaptive Heterogeneous GPU/CPU LLM Inference Runtime SDK
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lheteroaccel
+Cflags: -I${includedir}

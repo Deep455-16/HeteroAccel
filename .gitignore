@@ -75,5 +75,10 @@ build-phase18-vs2026/
 build_output*.txt
 build_p17_tests.txt
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # Misc dev artifacts at root
 filter.sh

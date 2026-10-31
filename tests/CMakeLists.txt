@@ -257,3 +257,40 @@ set_tests_properties(
         SKIP_RETURN_CODE 77
         TIMEOUT 180
 )
+
+# Phase 24 - Native Streaming and Intelligent Runtime Resource Management
+agr_add_test(test_p24_perf_profile test_p24_perf_profile.cpp)
+target_link_libraries(test_p24_perf_profile PRIVATE agr_sdk)
+
+agr_add_test(test_p24_memory_est   test_p24_memory_est.cpp)
+target_link_libraries(test_p24_memory_est PRIVATE agr_sdk)
+
+agr_add_test(test_p24_streaming    test_p24_streaming.cpp)
+target_link_libraries(test_p24_streaming PRIVATE agr_sdk)
+
+agr_add_test(test_p24_install      test_p24_install.cpp)
+target_link_libraries(test_p24_install PRIVATE agr_sdk)
+
+# The install test uses relative paths resolved from the repo root
+set_tests_properties(test_p24_install PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+set_tests_properties(
+    test_p24_streaming
+    test_p24_memory_est
+    PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(NAME test_p24_python_bindings
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../python/test_heteroaccel.py
+    )
+    set_tests_properties(test_p24_python_bindings PROPERTIES
+        ENVIRONMENT "HETEROACCEL_LIB_PATH=$<TARGET_FILE:heteroaccel>"
+        TIMEOUT 180
+    )
+endif()

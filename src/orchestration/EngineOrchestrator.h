@@ -29,6 +29,14 @@ public:
         bool prefer_latency = false;  // true = minimize TTFT, false = maximize throughput
         bool allow_cpu_fallback = true;
         std::string forced_backend;   // empty = auto-select
+
+        // Model hyperparameter metadata (for memory estimation)
+        uint32_t n_layers = 0;
+        uint32_t n_embd = 0;
+        uint32_t n_heads = 0;
+        uint32_t n_kv_heads = 0;
+        uint32_t n_ff = 0;
+        uint32_t vocab_size = 0;
     };
 
     struct SelectionResult {
@@ -37,6 +45,7 @@ public:
         std::vector<std::string> rejected_backends;  // with reasons
         bool is_fallback = false;
         bool used_benchmark_history = false;
+        size_t estimated_memory_bytes = 0;
     };
 
     using EngineFactory = std::function<std::shared_ptr<IInferenceEngine>()>;

@@ -1,32 +1,34 @@
 // include/heteroaccel/HeteroAccel.hpp
-// HeteroAccel Phase 23: Header-only Modern C++ RAII SDK Wrapper
+// HeteroAccel Phase 24: Header-only Modern C++ RAII SDK Wrapper
 //
 // Provides safe, idiomatic C++ RAII classes wrapping the C API.
 
 #ifndef HETEROACCEL_HPP
 #define HETEROACCEL_HPP
 
-#include "heteroaccel/heteroaccel.h"
+#include "heteroaccel.h"
 
+#include <exception>
 #include <functional>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace ha {
 
-class Exception : public std::runtime_error {
+class Exception : public std::exception {
 public:
-    Exception(HaError code, const std::string& msg)
-        : std::runtime_error(msg.empty() ? ha_error_string(code) : msg),
-          code_(code) {}
+    Exception(HaError code, const std::string& message)
+        : code_(code), msg_(message) {}
+
+    const char* what() const noexcept override { return msg_.c_str(); }
 
     HaError code() const noexcept { return code_; }
 
 private:
     HaError code_;
+    std::string msg_;
 };
 
 struct BackendInfo {
@@ -69,6 +71,16 @@ struct Result {
     bool ok() const noexcept { return error == HA_OK; }
 };
 
+struct MemoryEstimate {
+    size_t weights_bytes = 0;
+    size_t kv_cache_bytes = 0;
+    size_t activations_bytes = 0;
+    size_t overhead_bytes = 0;
+    size_t total_estimated = 0;
+    bool unified_memory = false;
+    std::string notes;
+};
+
 class Session {
 public:
     explicit Session(HaSession handle) : handle_(handle) {
@@ -106,35 +118,41 @@ public:
 
     Result infer(const InferParams& params) {
         if (!handle_) {
-            throw Exception(HA_ERR_INVALID_ARG, "Session is not open");
+            throw Exception(HA_ERR_INVALID_ARG, "Session is not initialized");
         }
         HaInferParams c_params = params.to_c_params();
-        HaResult c_res = ha_infer(handle_, &c_params);
+        HaResult res = ha_infer(handle_, &c_params);
 
         Result r;
-        if (c_res.output_text) {
-            r.output_text = c_res.output_text;
+        r.error = res.error;
+        if (res.error_message) r.error_message = res.error_message;
+        if (res.error != HA_OK) {
+            return r;
         }
-        if (c_res.output_token_ids && c_res.n_output_tokens > 0) {
-            r.output_token_ids.assign(c_res.output_token_ids,
-                                      c_res.output_token_ids + c_res.n_output_tokens);
+
+        if (res.output_text) r.output_text = res.output_text;
+        if (res.output_token_ids && res.n_output_tokens > 0) {
+            r.output_token_ids.assign(res.output_token_ids, res.output_token_ids + res.n_output_tokens);
         }
-        r.n_output_tokens = c_res.n_output_tokens;
-        r.n_prompt_tokens = c_res.n_prompt_tokens;
-        r.tokens_per_second = c_res.tokens_per_second;
-        r.gpu_used = (c_res.gpu_used != 0);
-        if (c_res.backend_used) {
-            r.backend_used = c_res.backend_used;
-        }
-        r.error = c_res.error;
-        if (c_res.error_message) {
-            r.error_message = c_res.error_message;
-        }
+        r.n_output_tokens = res.n_output_tokens;
+        r.n_prompt_tokens = res.n_prompt_tokens;
+        r.tokens_per_second = res.tokens_per_second;
+        r.gpu_used = (res.gpu_used != 0);
+        if (res.backend_used) r.backend_used = res.backend_used;
         return r;
+    }
+
+    Result infer(const std::string& prompt, int max_new_tokens = 16) {
+        InferParams params;
+        params.prompt = prompt;
+        params.max_new_tokens = max_new_tokens;
+        return infer(params);
     }
 
     using TokenCallback = std::function<bool(const std::string& token_text, int token_id)>;
 
+    /// Runs native incremental token streaming.
+    /// The callback is invoked as each token is generated.
     HaError infer_stream(const InferParams& params, const TokenCallback& callback) {
         if (!handle_) {
             return HA_ERR_INVALID_ARG;
@@ -145,10 +163,33 @@ public:
             auto* cb = static_cast<const TokenCallback*>(user_data);
             if (!cb || !(*cb)) return 0;
             bool continue_stream = (*cb)(text ? text : "", tid);
-            return continue_stream ? 0 : 1;
+            return continue_stream ? 0 : 1; // 0 to continue, 1 to cancel
         };
 
         return ha_infer_stream(handle_, &c_params, trampoline, const_cast<void*>(static_cast<const void*>(&callback)));
+    }
+
+    Result infer_stream(const std::string& prompt, const TokenCallback& callback, int max_new_tokens = 16) {
+        InferParams params;
+        params.prompt = prompt;
+        params.max_new_tokens = max_new_tokens;
+        HaError err = infer_stream(params, callback);
+        Result r;
+        r.error = err;
+        r.error_message = ha_error_string(err);
+        return r;
+    }
+
+    void cancel() {
+        if (handle_) {
+            ha_session_cancel(handle_);
+        }
+    }
+
+    HaSession release() noexcept {
+        HaSession h = handle_;
+        handle_ = nullptr;
+        return h;
     }
 
 private:
@@ -203,6 +244,23 @@ public:
         return ha_model_vocab_size(handle_);
     }
 
+    MemoryEstimate memory_estimate(uint32_t max_seq_len = 2048) const {
+        HaMemoryEstimate est = {};
+        HaError err = ha_model_memory_estimate(handle_, max_seq_len, &est);
+        if (err != HA_OK) {
+            throw Exception(err, "Failed to compute model memory estimate");
+        }
+        MemoryEstimate me;
+        me.weights_bytes = est.weights_bytes;
+        me.kv_cache_bytes = est.kv_cache_bytes;
+        me.activations_bytes = est.activations_bytes;
+        me.overhead_bytes = est.overhead_bytes;
+        me.total_estimated = est.total_estimated;
+        me.unified_memory = (est.unified_memory != 0);
+        if (est.notes) me.notes = est.notes;
+        return me;
+    }
+
     Session create_session() {
         HaError err = HA_OK;
         HaSession s = ha_session_create(handle_, &err);
@@ -210,6 +268,12 @@ public:
             throw Exception(err, std::string("Failed to create session: ") + ha_error_string(err));
         }
         return Session(s);
+    }
+
+    HaModel release() noexcept {
+        HaModel h = handle_;
+        handle_ = nullptr;
+        return h;
     }
 
 private:
@@ -294,9 +358,28 @@ public:
         HaError err = HA_OK;
         HaModel m = ha_model_load(handle_, path.c_str(), &err);
         if (!m || err != HA_OK) {
-            throw Exception(err, std::string("Failed to load model '") + path + "': " + ha_error_string(err));
+            throw Exception(err, std::string("Failed to load model: ") + ha_error_string(err));
         }
         return Model(m);
+    }
+
+    void perf_reset() {
+        if (handle_) {
+            ha_runtime_perf_reset(handle_);
+        }
+    }
+
+    std::string perf_path() const {
+        if (!handle_) return "";
+        char buf[512] = {0};
+        ha_runtime_perf_path(handle_, buf, sizeof(buf));
+        return std::string(buf);
+    }
+
+    HaRuntime release() noexcept {
+        HaRuntime h = handle_;
+        handle_ = nullptr;
+        return h;
     }
 
 private:

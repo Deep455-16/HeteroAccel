@@ -6,9 +6,13 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <functional>
 
 namespace agr {
 namespace orchestration {
+
+// Token callback: return false to cancel generation
+using StreamCallback = std::function<bool(const std::string& token_text, int token_id)>;
 
 struct InferenceRequest {
     std::vector<int> prompt_token_ids;
@@ -35,6 +39,15 @@ public:
     virtual ~IInferenceEngine() = default;
     virtual bool initialize(const std::string& model_path, std::string& error) = 0;
     virtual InferenceResult run(const InferenceRequest& req) = 0;
+    virtual bool run_stream(const InferenceRequest& req,
+                            StreamCallback cb,
+                            InferenceResult& result_out) {
+        (void)req;
+        (void)cb;
+        (void)result_out;
+        return false;
+    }
+    virtual bool supports_streaming() const { return false; }
     virtual void shutdown() = 0;
     virtual std::string backend_id() const = 0;
     virtual bool is_ready() const = 0;

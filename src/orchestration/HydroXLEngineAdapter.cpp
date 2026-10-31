@@ -62,16 +62,24 @@ bool HydroXLCpuEngineAdapter::initialize(const std::string& model_path, std::str
 }
 
 InferenceResult HydroXLCpuEngineAdapter::run(const InferenceRequest& req) {
+    InferenceResult res;
+    run_stream(req, nullptr, res);
+    return res;
+}
+
+bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
+                                         StreamCallback cb,
+                                         InferenceResult& res) {
     std::lock_guard<std::mutex> lk(mu_);
 
-    InferenceResult res;
+    res = InferenceResult();
     res.backend_used = "hydroxl_cpu";
     res.gpu_used = false;
 
     if (!is_ready_ || !forward_pass_ || !forward_pass_->isReady()) {
         res.success = false;
         res.error = "Engine not ready or not initialized";
-        return res;
+        return false;
     }
 
     std::vector<hydroxl::TokenID> prompt_tokens;
@@ -97,7 +105,7 @@ InferenceResult HydroXLCpuEngineAdapter::run(const InferenceRequest& req) {
         if (!forward_pass_->forward(static_cast<uint32_t>(tok), pos, logits)) {
             res.success = false;
             res.error = "Prefill failed: " + forward_pass_->lastError();
-            return res;
+            return false;
         }
         ++pos;
     }
@@ -114,6 +122,7 @@ InferenceResult HydroXLCpuEngineAdapter::run(const InferenceRequest& req) {
     int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
 
     auto t_gen_start = std::chrono::steady_clock::now();
+    bool cancelled = false;
     for (int i = 0; i < max_new; ++i) {
         if (pos >= kv_cache_->maxSeqLen()) break;
 
@@ -127,14 +136,25 @@ InferenceResult HydroXLCpuEngineAdapter::run(const InferenceRequest& req) {
             break;
         }
 
-        out_ids.push_back(static_cast<int>(next_tok));
+        int tid = static_cast<int>(next_tok);
+        out_ids.push_back(tid);
         std::string piece = tokenizer_->decodeToken(next_tok);
         out_text += piece;
+
+        if (cb) {
+            if (!cb(piece, tid)) {
+                cancelled = true;
+                break;
+            }
+        }
 
         if (!forward_pass_->forward(static_cast<uint32_t>(next_tok), pos, logits)) {
             res.success = false;
             res.error = "Forward pass failed during generation: " + forward_pass_->lastError();
-            return res;
+            res.output_token_ids = out_ids;
+            res.output_text = out_text;
+            res.output_tokens = static_cast<int>(out_ids.size());
+            return false;
         }
         ++pos;
     }
@@ -147,8 +167,12 @@ InferenceResult HydroXLCpuEngineAdapter::run(const InferenceRequest& req) {
     if (gen_sec > 0.0 && res.output_tokens > 0) {
         res.tokens_per_second = static_cast<float>(res.output_tokens / gen_sec);
     }
-    res.success = true;
-    return res;
+    res.success = !cancelled;
+    if (cancelled) {
+        res.error = "Cancelled";
+        return false;
+    }
+    return true;
 }
 
 void HydroXLCpuEngineAdapter::shutdown() {
@@ -485,16 +509,24 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
 }
 
 InferenceResult HydroXLVulkanEngineAdapter::run(const InferenceRequest& req) {
+    InferenceResult res;
+    run_stream(req, nullptr, res);
+    return res;
+}
+
+bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
+                                            StreamCallback cb,
+                                            InferenceResult& res) {
     std::lock_guard<std::mutex> lk(mu_);
 
-    InferenceResult res;
+    res = InferenceResult();
     res.backend_used = "hydroxl_vulkan";
     res.gpu_used = true;
 
     if (!is_ready_ || !model_ || !tokenizer_ || !kv_cache_ || !vk_ops_.isReady()) {
         res.success = false;
         res.error = "Engine not ready or not initialized";
-        return res;
+        return false;
     }
 
     std::vector<hydroxl::TokenID> prompt_tokens;
@@ -521,7 +553,7 @@ InferenceResult HydroXLVulkanEngineAdapter::run(const InferenceRequest& req) {
         if (!forward_token(static_cast<uint32_t>(tok), pos, logits, err)) {
             res.success = false;
             res.error = "Prefill failed: " + err;
-            return res;
+            return false;
         }
         ++pos;
     }
@@ -538,6 +570,7 @@ InferenceResult HydroXLVulkanEngineAdapter::run(const InferenceRequest& req) {
     int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
 
     auto t_gen_start = std::chrono::steady_clock::now();
+    bool cancelled = false;
     for (int i = 0; i < max_new; ++i) {
         if (pos >= kv_cache_->maxSeqLen()) break;
 
@@ -551,14 +584,25 @@ InferenceResult HydroXLVulkanEngineAdapter::run(const InferenceRequest& req) {
             break;
         }
 
-        out_ids.push_back(static_cast<int>(next_tok));
+        int tid = static_cast<int>(next_tok);
+        out_ids.push_back(tid);
         std::string piece = tokenizer_->decodeToken(next_tok);
         out_text += piece;
+
+        if (cb) {
+            if (!cb(piece, tid)) {
+                cancelled = true;
+                break;
+            }
+        }
 
         if (!forward_token(static_cast<uint32_t>(next_tok), pos, logits, err)) {
             res.success = false;
             res.error = "Forward pass failed during generation: " + err;
-            return res;
+            res.output_token_ids = out_ids;
+            res.output_text = out_text;
+            res.output_tokens = static_cast<int>(out_ids.size());
+            return false;
         }
         ++pos;
     }
@@ -571,8 +615,12 @@ InferenceResult HydroXLVulkanEngineAdapter::run(const InferenceRequest& req) {
     if (gen_sec > 0.0 && res.output_tokens > 0) {
         res.tokens_per_second = static_cast<float>(res.output_tokens / gen_sec);
     }
-    res.success = true;
-    return res;
+    res.success = !cancelled;
+    if (cancelled) {
+        res.error = "Cancelled";
+        return false;
+    }
+    return true;
 }
 
 void HydroXLVulkanEngineAdapter::shutdown() {

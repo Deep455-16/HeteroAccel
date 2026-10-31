@@ -3,6 +3,7 @@
 
 #include "orchestration/EngineOrchestrator.h"
 #include "orchestration/HydroXLEngineAdapter.h"
+#include "orchestration/MemoryEstimator.h"
 
 #include <algorithm>
 #include <iomanip>
@@ -136,9 +137,38 @@ EngineOrchestrator::SelectionResult EngineOrchestrator::select_backend(const Sel
     };
     std::vector<Candidate> candidates;
 
-    size_t memory_needed = static_cast<size_t>(req.model_size_bytes * 1.2);
+    size_t memory_needed = 0;
+    if (req.n_layers > 0 && req.n_embd > 0 && req.vocab_size > 0) {
+        auto est = MemoryEstimator::estimate(
+            req.n_layers, req.n_embd, req.n_heads, req.n_kv_heads,
+            req.n_ff, req.vocab_size, static_cast<uint32_t>(req.n_ctx)
+        );
+        memory_needed = est.total_estimated;
+        res.estimated_memory_bytes = est.total_estimated;
+    } else {
+        memory_needed = static_cast<size_t>(req.model_size_bytes * 1.2);
+        res.estimated_memory_bytes = memory_needed;
+    }
+
+    size_t avail_ram = MemoryEstimator::available_ram_bytes();
+    if (avail_ram == 0) {
+        avail_ram = hw.available_system_ram();
+    }
+
+    bool high_memory_pressure = (avail_ram > 0 && memory_needed > static_cast<size_t>(avail_ram * 0.90));
+    if (high_memory_pressure) {
+        std::cerr << "[HeteroAccel WARNING] Model estimated memory ("
+                  << (memory_needed / (1024 * 1024)) << " MB) exceeds 90% of available RAM ("
+                  << (avail_ram / (1024 * 1024)) << " MB); prioritizing CPU backend.\n";
+    }
 
     for (const auto& b : backends_) {
+        // If memory pressure is critical, skip high-risk GPU backends in favor of CPU
+        if (high_memory_pressure && (b.requires_vulkan || b.requires_cuda)) {
+            res.rejected_backends.push_back(b.backend_id + ": memory footprint exceeds 90% available RAM; CPU prioritized");
+            continue;
+        }
+
         // Check availability
         if (!b.is_available(hw)) {
             res.rejected_backends.push_back(b.backend_id + ": hardware requirements not satisfied");

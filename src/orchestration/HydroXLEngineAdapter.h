@@ -24,6 +24,10 @@ public:
 
     bool initialize(const std::string& model_path, std::string& error) override;
     InferenceResult run(const InferenceRequest& req) override;
+    bool run_stream(const InferenceRequest& req,
+                    StreamCallback cb,
+                    InferenceResult& result_out) override;
+    bool supports_streaming() const override { return true; }
     void shutdown() override;
     std::string backend_id() const override;
     bool is_ready() const override;
@@ -46,6 +50,10 @@ public:
 
     bool initialize(const std::string& model_path, std::string& error) override;
     InferenceResult run(const InferenceRequest& req) override;
+    bool run_stream(const InferenceRequest& req,
+                    StreamCallback cb,
+                    InferenceResult& result_out) override;
+    bool supports_streaming() const override { return true; }
     void shutdown() override;
     std::string backend_id() const override;
     bool is_ready() const override;

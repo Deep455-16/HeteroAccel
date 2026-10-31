@@ -1,8 +1,9 @@
 // include/heteroaccel/heteroaccel.h
-// HeteroAccel Phase 23: Stable Public C API and Developer SDK
+// HeteroAccel Phase 24: Native Streaming and Intelligent Runtime Resource Management
 //
 // Standalone C API header providing full access to HeteroAccel runtime,
-// model loading, hardware-aware backend orchestration, and inference.
+// model loading, hardware-aware backend orchestration, memory estimation,
+// persistent performance profiling, native token streaming, and inference.
 
 #ifndef HETEROACCEL_H
 #define HETEROACCEL_H
@@ -29,7 +30,7 @@ extern "C" {
 
 // Versioning
 #define HETEROACCEL_VERSION_MAJOR 0
-#define HETEROACCEL_VERSION_MINOR 23
+#define HETEROACCEL_VERSION_MINOR 24
 #define HETEROACCEL_VERSION_PATCH 0
 
 // Opaque handles
@@ -55,12 +56,30 @@ HA_API HaRuntime   ha_runtime_create(void);
 HA_API void        ha_runtime_destroy(HaRuntime rt);
 HA_API const char* ha_version_string(void);
 
+// Persistent performance profiling
+HA_API HaError     ha_runtime_perf_reset(HaRuntime rt);
+HA_API HaError     ha_runtime_perf_path(HaRuntime rt, char* buf, size_t buf_size);
+
 // Model loading
 HA_API HaModel     ha_model_load(HaRuntime rt, const char* path, HaError* err_out);
 HA_API void        ha_model_unload(HaModel model);
 HA_API const char* ha_model_arch(HaModel model);
 HA_API uint32_t    ha_model_context_length(HaModel model);
 HA_API uint32_t    ha_model_vocab_size(HaModel model);
+
+// Context-aware memory estimation
+typedef struct {
+    size_t      weights_bytes;       // dequantized float32 model weights
+    size_t      kv_cache_bytes;      // KV cache for requested max_seq_len
+    size_t      activations_bytes;   // per-token scratch buffers
+    size_t      overhead_bytes;      // safety overhead
+    size_t      total_estimated;     // sum of above
+    int         unified_memory;      // 1 if GPU and CPU share system RAM
+    const char* notes;               // human-readable explanation
+} HaMemoryEstimate;
+
+HA_API HaError     ha_model_memory_estimate(HaModel model, uint32_t max_seq_len,
+                                            HaMemoryEstimate* out);
 
 // Inference session
 HA_API HaSession   ha_session_create(HaModel model, HaError* err_out);
@@ -95,9 +114,13 @@ HA_API HaResult    ha_infer(HaSession session, const HaInferParams* params);
 // Streaming token callback (return 0 to continue, non-zero to cancel)
 typedef int (*HaTokenCallback)(const char* token_text, int token_id, void* user_data);
 
-// Streaming inference (simulated post-hoc over decoded tokens/words)
+// Streaming inference: native incremental token streaming (or post-hoc fallback)
 HA_API HaError     ha_infer_stream(HaSession session, const HaInferParams* params,
                                    HaTokenCallback cb, void* user_data);
+
+// Cancellation
+HA_API HaError     ha_session_cancel(HaSession session);
+HA_API HaError     ha_infer_cancel(HaSession session);
 
 // Backend introspection
 typedef struct {

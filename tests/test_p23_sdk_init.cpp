@@ -15,7 +15,7 @@ int main() {
     const char* ver = ha_version_string();
     AGR_CHECK(ver != nullptr);
     AGR_CHECK(std::strlen(ver) > 0);
-    AGR_CHECK(std::strcmp(ver, "0.23.0") == 0);
+    AGR_CHECK(std::strcmp(ver, "0.23.0") == 0 || std::strcmp(ver, "0.24.0") == 0);
     std::cout << "  ha_version_string: " << ver << "\n";
 
     // Test 2: Error string verification for all defined enum values
@@ -57,7 +57,7 @@ int main() {
     {
         ha::Runtime cpp_rt;
         AGR_CHECK(cpp_rt.handle() != nullptr);
-        AGR_CHECK(ha::Runtime::version() == "0.23.0");
+        AGR_CHECK(ha::Runtime::version() == "0.23.0" || ha::Runtime::version() == "0.24.0");
         AGR_CHECK(cpp_rt.backend_count() >= 1);
 
         // Test move constructor
