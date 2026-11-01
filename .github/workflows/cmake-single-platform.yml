@@ -26,7 +26,6 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             gcc \
@@ -41,7 +40,7 @@ jobs:
             libomp-dev
 
       # 3. Install Vulkan and SPIR-V dependencies
-      - name: Install Vulkan and SPIR-V SDK dependencies
+      - name: Install Vulkan and SPIR-V dependencies
         run: |
           sudo apt-get install -y \
             libvulkan-dev \
@@ -53,13 +52,15 @@ jobs:
             spirv-headers \
             libshaderc-dev
 
-      # 4. Verify Vulkan and shader compiler installation
+      # 4. Verify Vulkan and SPIR-V dependencies
       - name: Verify Vulkan dependencies
         run: |
+          set -e
+
           echo "Checking Vulkan headers..."
           test -f /usr/include/vulkan/vulkan.h
 
-          echo "Checking shader compilers..."
+          echo "Checking Vulkan compiler..."
           command -v glslc
           command -v glslangValidator
 
@@ -67,15 +68,22 @@ jobs:
           command -v spirv-val
           command -v spirv-as
 
-          echo "Checking Vulkan library..."
+          echo "Checking Vulkan libraries..."
           ldconfig -p | grep libvulkan
 
-          echo "Checking SPIR-V headers CMake configuration..."
-          dpkg -L spirv-headers | grep -E 'SPIRV-HeadersConfig.cmake|spirv-headers-config.cmake'
+          echo "Checking SPIR-V CMake configuration..."
+          dpkg -L spirv-headers | grep -E \
+            'SPIRV-HeadersConfig.cmake|spirv-headers-config.cmake'
 
-          echo "Vulkan dependency verification completed."
+          echo "Vulkan and SPIR-V dependencies verified."
 
-      # 5. Configure CMake
+      # 5. Verify available Vulkan runtime
+      - name: Check Vulkan runtime
+        run: |
+          echo "Checking available Vulkan devices..."
+          vulkaninfo --summary || true
+
+      # 6. Configure CMake with Vulkan enabled
       - name: Configure CMake
         run: |
           cmake -B ${{github.workspace}}/build \
@@ -87,14 +95,22 @@ jobs:
             -DGGML_CCACHE=ON \
             -DCMAKE_PREFIX_PATH="/usr"
 
-      # 6. Build HeteroAccel and HydroXL
+      # 7. Build HeteroAccel, HydroXL and llama.cpp
       - name: Build HeteroAccel
         run: |
           cmake --build ${{github.workspace}}/build \
             --config ${{env.BUILD_TYPE}} \
             --parallel 2
 
-      # 7. Execute test suite
+      # 8. Verify generated build targets
+      - name: Verify build outputs
+        run: |
+          echo "Build completed. Checking generated executables..."
+          find build -type f -executable \
+            \( -name "adaptive-gpu" -o -name "*.so" \) \
+            -print
+
+      # 9. Execute automated test suite
       - name: Run HeteroAccel Tests
         working-directory: ${{github.workspace}}/build
         run: |
@@ -103,8 +119,8 @@ jobs:
             --output-on-failure \
             --parallel 2
 
-      # 8. Upload build logs if the workflow fails
-      - name: Upload CMake build artifacts
+      # 10. Upload diagnostics if any step fails
+      - name: Upload CMake build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -113,5 +129,6 @@ jobs:
             build/CMakeCache.txt
             build/CMakeFiles/CMakeError.log
             build/CMakeFiles/CMakeOutput.log
+            build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
