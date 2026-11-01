@@ -1,51 +1,117 @@
 
-name: CMake on a single platform
+name: HeteroAccel CMake CI
 
 on:
   push:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 env:
   BUILD_TYPE: Release
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Ubuntu Vulkan + CPU Build
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
+      # 1. Checkout repository
+      - name: Checkout HeteroAccel
         uses: actions/checkout@v4
 
-      - name: Install Vulkan dependencies
+      # 2. Install build tools and system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            gcc \
+            g++ \
+            cmake \
+            ninja-build \
+            git \
+            pkg-config \
+            ccache \
+            python3 \
+            python3-pip \
+            libomp-dev
+
+      # 3. Install Vulkan and SPIR-V dependencies
+      - name: Install Vulkan and SPIR-V SDK dependencies
+        run: |
           sudo apt-get install -y \
             libvulkan-dev \
+            mesa-vulkan-drivers \
+            vulkan-tools \
             glslc \
             glslang-tools \
-            spirv-tools
+            spirv-tools \
+            spirv-headers \
+            libshaderc-dev
 
+      # 4. Verify Vulkan and shader compiler installation
       - name: Verify Vulkan dependencies
         run: |
-          command -v glslc
-          command -v glslangValidator
-          glslc --version
+          echo "Checking Vulkan headers..."
           test -f /usr/include/vulkan/vulkan.h
 
+          echo "Checking shader compilers..."
+          command -v glslc
+          command -v glslangValidator
+
+          echo "Checking SPIR-V tools..."
+          command -v spirv-val
+          command -v spirv-as
+
+          echo "Checking Vulkan library..."
+          ldconfig -p | grep libvulkan
+
+          echo "Checking SPIR-V headers CMake configuration..."
+          dpkg -L spirv-headers | grep -E 'SPIRV-HeadersConfig.cmake|spirv-headers-config.cmake'
+
+          echo "Vulkan dependency verification completed."
+
+      # 5. Configure CMake
       - name: Configure CMake
         run: |
           cmake -B ${{github.workspace}}/build \
-            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DGGML_VULKAN=ON \
+            -DGGML_CCACHE=ON \
+            -DCMAKE_PREFIX_PATH="/usr"
 
-      - name: Build
+      # 6. Build HeteroAccel and HydroXL
+      - name: Build HeteroAccel
         run: |
           cmake --build ${{github.workspace}}/build \
             --config ${{env.BUILD_TYPE}} \
             --parallel 2
 
-      - name: Test
+      # 7. Execute test suite
+      - name: Run HeteroAccel Tests
         working-directory: ${{github.workspace}}/build
         run: |
-          ctest -C ${{env.BUILD_TYPE}} --output-on-failure
+          ctest \
+            --build-config ${{env.BUILD_TYPE}} \
+            --output-on-failure \
+            --parallel 2
+
+      # 8. Upload build logs if the workflow fails
+      - name: Upload CMake build artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heteroaccel-build-logs
+          path: |
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeError.log
+            build/CMakeFiles/CMakeOutput.log
+          if-no-files-found: ignore
+          retention-days: 7
