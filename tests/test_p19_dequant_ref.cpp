@@ -279,12 +279,12 @@ int main() {
             const uint32_t man = h & 0x3FF;
             float v;
             if (exp == 0) {
-                v = std::ldexpf(static_cast<float>(man), -24); // subnormal
+                v = std::ldexp(static_cast<float>(man), -24); // subnormal
             } else if (exp == 31) {
                 v = (man == 0) ? std::numeric_limits<float>::infinity()
                                : std::numeric_limits<float>::quiet_NaN();
             } else {
-                v = std::ldexpf(static_cast<float>(man + 0x400), static_cast<int>(exp) - 25);
+                v = std::ldexp(static_cast<float>(man + 0x400), static_cast<int>(exp) - 25);
             }
             return sign ? -v : v;
         };

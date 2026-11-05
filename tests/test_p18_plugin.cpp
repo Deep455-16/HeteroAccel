@@ -37,8 +37,22 @@ using namespace agr;
 #define AGR_TEST_PLUGIN_DIR "."
 #endif
 
+#ifdef _WIN32
+#  include <stdlib.h>
+#  define AGR_SETENV(k, v) _putenv_s((k), (v))
+#  define PLUG_GOOD "hydroxl_test_plugin.dll"
+#  define PLUG_BAD  "test_plugin_badabi.dll"
+#  define PLUG_EXT  ".dll"
+#else
+#  include <stdlib.h>
+#  define AGR_SETENV(k, v) setenv((k), (v), 1)
+#  define PLUG_GOOD "libhydroxl_test_plugin.so"
+#  define PLUG_BAD  "libtest_plugin_badabi.so"
+#  define PLUG_EXT  ".so"
+#endif
+
 namespace {
-std::string dirOf(const std::string& p) {
+[[maybe_unused]] std::string dirOf(const std::string& p) {
     size_t s = p.find_last_of("/\\");
     return (s == std::string::npos) ? "." : p.substr(0, s);
 }
@@ -49,8 +63,8 @@ bool contains(const std::string& hay, const std::string& needle) {
 
 int main() {
     const std::string good_dir = AGR_TEST_PLUGIN_DIR;
-    const std::string good_dll = good_dir + "/hydroxl_test_plugin.dll";
-    const std::string bad_dll  = good_dir + "/test_plugin_badabi.dll";
+    const std::string good_dll = good_dir + "/" PLUG_GOOD;
+    const std::string bad_dll  = good_dir + "/" PLUG_BAD;
 
     AGR_CHECK(std::filesystem::exists(good_dll)); // plugin DLLs were built
     AGR_CHECK(std::filesystem::exists(bad_dll));
@@ -59,7 +73,7 @@ int main() {
     std::string junk_dir = "p18_junk_plugins";
     std::filesystem::create_directories(junk_dir);
     {
-        std::ofstream j(junk_dir + "/junk.dll", std::ios::binary);
+        std::ofstream j(junk_dir + "/junk" PLUG_EXT, std::ios::binary);
         j << "this is not a PE image";
     }
 
@@ -70,20 +84,20 @@ int main() {
     // 1. Discovery (directory containing both plugins)
     // ==================================================================
     {
-        _putenv_s("AGR_PLUGIN_DIR", good_dir.c_str());
+        AGR_SETENV("AGR_PLUGIN_DIR", good_dir.c_str());
         auto results = plugin_discover();
 
         bool found_good = false, found_bad = false;
         for (const auto& r : results) {
             std::string fn(r.filename);
-            if (fn == "hydroxl_test_plugin.dll") {
+            if (fn == PLUG_GOOD) {
                 found_good = true;
                 AGR_CHECK(r.loadable);
                 AGR_CHECK(r.load_error.code == AGR_PLUGIN_ERROR_NONE);
                 AGR_CHECK(std::string(r.identity.name) == "hydroxl-test");
                 AGR_CHECK(std::string(r.identity.type) == "LLM");
             }
-            if (fn == "test_plugin_badabi.dll") {
+            if (fn == PLUG_BAD) {
                 found_bad = true;
                 AGR_CHECK(!r.loadable);
                 AGR_CHECK(contains(r.load_error.message, "ABI version mismatch"));
@@ -93,7 +107,7 @@ int main() {
         AGR_CHECK(found_bad);
     }
     {   // junk directory: invalid PE reported not loadable
-        _putenv_s("AGR_PLUGIN_DIR", junk_dir.c_str());
+        AGR_SETENV("AGR_PLUGIN_DIR", junk_dir.c_str());
         auto results = plugin_discover();
         AGR_CHECK(results.size() == 1);
         if (!results.empty()) {
@@ -207,7 +221,7 @@ int main() {
             stop = true;
         });
         threads.emplace_back([&] {
-            _putenv_s("AGR_PLUGIN_DIR", good_dir.c_str());
+            AGR_SETENV("AGR_PLUGIN_DIR", good_dir.c_str());
             for (int i = 0; i < 5 && !stop.load(); ++i) {
                 plugin_discover();
             }
