@@ -4,6 +4,8 @@ project(AdaptiveGPURuntime VERSION 0.24.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Static libs are linked into the heteroaccel shared library; they need -fPIC on Linux.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(MSVC)

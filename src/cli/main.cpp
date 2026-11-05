@@ -948,7 +948,7 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
     // Initialize orchestrator with hardware-aware backend registration
     EngineOrchestrator& orch = EngineOrchestrator::instance();
     orch.reset();
-    HardwareDetector& hw = HardwareDetector::instance();
+    orchestration::HardwareDetector& hw = orchestration::HardwareDetector::instance();
     hw.detect();
     register_default_backends(orch, hw);
 
@@ -1001,7 +1001,7 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
     std::cout << "Generating...\n";
     std::cout << "---------------------------------------------\n";
 
-    InferenceRequest ireq;
+    orchestration::InferenceRequest ireq;
     // Pass prompt text via a single placeholder token; actual generation uses internal BPE
     ireq.max_new_tokens = max_tokens;
     ireq.temperature = 0.8f;
@@ -1010,7 +1010,7 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
 
     auto t0 = std::chrono::steady_clock::now();
 
-    InferenceResult result;
+    orchestration::InferenceResult result;
     if (engine->supports_streaming()) {
         engine->run_stream(ireq, [](const std::string& tok, int) -> bool {
             std::cout << tok << std::flush;
