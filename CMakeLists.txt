@@ -595,6 +595,9 @@ target_include_directories(agr_plugin PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# dlopen/dlsym requires libdl on Linux; CMAKE_DL_LIBS is empty on Windows/macOS
+target_link_libraries(agr_plugin PUBLIC ${CMAKE_DL_LIBS})
+
 # --- Negative-control plugin: mismatched ABI version ---------------------
 
 add_library(test_plugin_badabi SHARED
