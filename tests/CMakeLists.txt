@@ -294,3 +294,19 @@ if(Python3_FOUND)
         TIMEOUT 180
     )
 endif()
+
+# Phase 25 — Release Readiness
+agr_add_test(test_p25_version             test_p25_version.cpp)
+target_link_libraries(test_p25_version    PRIVATE agr_sdk)
+
+agr_add_test(test_p25_license             test_p25_license.cpp)
+target_compile_definitions(test_p25_license PRIVATE
+    HETEROACCEL_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+agr_add_test(test_p25_orchestrator_cli    test_p25_orchestrator_cli.cpp)
+
+agr_add_test(test_p25_release             test_p25_release.cpp)
+target_link_libraries(test_p25_release    PRIVATE agr_sdk)
+
+agr_add_test(test_p25_perf_persist        test_p25_perf_persist.cpp)
+target_link_libraries(test_p25_perf_persist PRIVATE agr_sdk)

@@ -30,7 +30,7 @@ extern "C" {
 
 // Versioning
 #define HETEROACCEL_VERSION_MAJOR 0
-#define HETEROACCEL_VERSION_MINOR 24
+#define HETEROACCEL_VERSION_MINOR 25
 #define HETEROACCEL_VERSION_PATCH 0
 
 // Opaque handles

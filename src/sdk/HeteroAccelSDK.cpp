@@ -126,7 +126,7 @@ void ha_runtime_destroy(HaRuntime rt) {
 }
 
 const char* ha_version_string(void) {
-    return "0.24.0";
+    return "0.25.0";
 }
 
 HaError ha_runtime_perf_reset(HaRuntime rt) {

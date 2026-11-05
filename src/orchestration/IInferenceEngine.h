@@ -28,6 +28,7 @@ struct InferenceResult {
     int prompt_tokens = 0;
     int output_tokens = 0;
     float tokens_per_second = 0.0f;
+    size_t peak_memory_bytes = 0;
     bool gpu_used = false;
     std::string backend_used;
     bool success = false;

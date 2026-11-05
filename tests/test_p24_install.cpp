@@ -34,7 +34,7 @@ int main() {
     AGR_CHECK(std::filesystem::exists(c_header));
     AGR_CHECK(std::filesystem::exists(cpp_header));
 
-    AGR_CHECK(file_contains(c_header, "HETEROACCEL_VERSION_MINOR 24"));
+    AGR_CHECK(file_contains(c_header, "HETEROACCEL_VERSION_MINOR 25"));
     AGR_CHECK(file_contains(c_header, "HaMemoryEstimate"));
     AGR_CHECK(file_contains(c_header, "ha_model_memory_estimate"));
     AGR_CHECK(file_contains(c_header, "ha_infer_stream"));
