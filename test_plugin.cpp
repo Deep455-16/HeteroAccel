@@ -22,6 +22,10 @@
 // (needed for pluginExecute to fill outResult)
 #include "engine/ExecutionResult.h"
 
+// Standard C headers — required by GCC/Clang (MSVC pulls these in transitively)
+#include <cstring>   // strlen, memcpy, strncpy
+#include <cstdlib>   // malloc, free
+
 // ---------------------------------------------------------------------------
 // Engine identity (matches what we report)
 // ---------------------------------------------------------------------------
