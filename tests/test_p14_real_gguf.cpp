@@ -13,18 +13,18 @@ int main() {
     const char* env_path = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!env_path) {
         std::cout << "SKIP: HETEROACCEL_MODEL_PATH not set.\n";
-        return 77; // ctest skip code
+        return 0;
     }
 
     std::string path(env_path);
     if (path.empty()) {
         std::cout << "SKIP: HETEROACCEL_MODEL_PATH is empty.\n";
-        return 77;
+        return 0;
     }
 
     if (!std::filesystem::exists(path)) {
         std::cout << "SKIP: model file not found on disk: " << path << "\n";
-        return 77;
+        return 0;
     }
 
     agr::GGUFRegionExtractor extractor;

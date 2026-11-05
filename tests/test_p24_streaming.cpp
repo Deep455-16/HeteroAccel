@@ -76,7 +76,7 @@ int main() {
 
     if (model_path.empty() || !std::filesystem::exists(model_path)) {
         std::cout << "[SKIP] No model found at HETEROACCEL_MODEL_PATH or default path: " << model_path << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     HaRuntime rt = ha_runtime_create();

@@ -12,6 +12,8 @@ void main() {
     sh[tid] = mx; barrier();
     for (uint s=128;s>0;s>>=1){if(tid<s)sh[tid]=max(sh[tid],sh[tid+s]);barrier();}
     float vmax = sh[0];
+    // All threads must read sh[0] before it is reused for the sum reduction
+    barrier();
     // exp and sum
     float sm = 0.0;
     for (uint i = tid; i < pc.n; i += 256) { x[i] = exp(x[i] - vmax); sm += x[i]; }

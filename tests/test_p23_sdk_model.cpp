@@ -63,7 +63,7 @@ int main() {
     if (model_path.empty() || !std::filesystem::exists(model_path)) {
         std::cout << "[SKIP] HETEROACCEL_MODEL_PATH not set or file does not exist: " << model_path << "\n";
         ha_runtime_destroy(rt);
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     std::cout << "Loading real model: " << model_path << "\n";

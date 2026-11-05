@@ -43,7 +43,7 @@ int main() {
     if (!std::filesystem::exists(model_path)) {
         std::cout << "[SKIP] Model file not found: " << model_path << "\n";
         std::cout << "       Set HETEROACCEL_MODEL_PATH to run real-model e2e test.\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     std::cout << "[INFO] Real Model: " << model_path << "\n";

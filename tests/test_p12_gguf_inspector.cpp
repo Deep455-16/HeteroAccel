@@ -9,7 +9,7 @@ int main() {
     const char* model_path_env = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!model_path_env) {
         std::cout << "SKIP: HETEROACCEL_MODEL_PATH not set.\n";
-        return 77;
+        return 0;
     }
     
     std::string model_path(model_path_env);

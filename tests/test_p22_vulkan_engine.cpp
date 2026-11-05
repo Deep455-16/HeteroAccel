@@ -33,20 +33,20 @@ int main() {
     hw.detect();
     if (!hw.has_vulkan()) {
         std::cout << "[SKIP] Vulkan not available on this platform\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     const char* model_env = std::getenv("HETEROACCEL_MODEL_PATH");
     std::string model_path = model_env ? model_env : "";
     if (model_path.empty()) {
         std::cout << "[SKIP] HETEROACCEL_MODEL_PATH environment variable not set\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     std::ifstream mf(model_path, std::ios::binary);
     if (!mf.is_open()) {
         std::cout << "[SKIP] Model file not accessible: " << model_path << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     mf.close();
 

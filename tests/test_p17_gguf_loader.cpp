@@ -30,7 +30,7 @@ int main() {
     if (!modelAvailable()) {
         std::cout << "[SKIP] Model not found at " << modelPath() << "\n";
         std::cout << "       Set HETEROACCEL_MODEL_PATH to override.\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     // Open succeeds

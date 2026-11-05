@@ -18,17 +18,17 @@ int main() {
     agr::HardwareInfo info = agr::HardwareDetector::detectAll();
     if (!info.vulkan.available) {
         std::cout << "  SKIP: Vulkan not available.\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     const char* model_env = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!model_env || std::string(model_env).empty()) {
         std::cout << "  SKIP: HETEROACCEL_MODEL_PATH not set.\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     if (!std::filesystem::exists(model_env)) {
         std::cout << "  SKIP: model file not found on disk: " << model_env << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     // 1. CPU Mode

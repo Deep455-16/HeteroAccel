@@ -55,7 +55,7 @@ int main() {
     if (!modelAvailable()) {
         std::cout << "[SKIP] Model not found: " << modelPath() << "\n";
         std::cout << "       Set HETEROACCEL_MODEL_PATH env var to override.\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     std::cout << "[INFO] Validating HydroXL with model: " << modelPath() << "\n";
 

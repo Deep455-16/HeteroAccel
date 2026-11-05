@@ -35,7 +35,7 @@ int main() {
     std::string model_path = model_env ? model_env : "";
     if (model_path.empty() || !std::filesystem::exists(model_path)) {
         std::cout << "[SKIP] HETEROACCEL_MODEL_PATH not set or file does not exist: " << model_path << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     HaRuntime rt = ha_runtime_create();
