@@ -99,10 +99,21 @@ typedef enum {
 } agrPluginState;
 
 // ============================================================================
+// Calling convention portability macro.
+// __stdcall is Windows x86/MSVC only; on x64 and all POSIX platforms it is a
+// no-op. We define AGR_PLUGIN_CALL so that plugin authors write portable code.
+// ---------------------------------------------------------------------------
+#if defined(_MSC_VER) && defined(_M_IX86)
+#  define AGR_PLUGIN_CALL __stdcall
+#else
+#  define AGR_PLUGIN_CALL
+#endif
+
+// ============================================================================
 // Exported Function Entry Points
-// Every plugin DLL must export these functions. The host uses GetProcAddress
-// to resolve them. Failure to export required functions is a fatal load error.
-// Linkage: __stdcall on Windows (matches GetProcAddress conventions).
+// Every plugin shared library must export these functions. The host uses
+// GetProcAddress (Windows) or dlsym (POSIX) to resolve them.
+// Failure to export required functions is a fatal load error.
 
 // ---------------------------------------------------------------------------
 // pluginGetAbiVersion()
@@ -111,7 +122,7 @@ typedef enum {
 // AGR_HOST_EXPECTED_ABI_VERSION BEFORE calling any other entry point, so a
 // plugin built against an incompatible struct layout is never invoked.
 // ---------------------------------------------------------------------------
-typedef uint32_t (__stdcall *agrPluginGetAbiVersionFn)(void);
+typedef uint32_t (AGR_PLUGIN_CALL *agrPluginGetAbiVersionFn)(void);
 
 // ---------------------------------------------------------------------------
 // pluginGetIdentity()
@@ -120,7 +131,7 @@ typedef uint32_t (__stdcall *agrPluginGetAbiVersionFn)(void);
 // Returns: AGR_PLUGIN_ERROR_NONE on success, or an error code.
 // The plugin must not retain pointers into the host-provided buffer.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginGetIdentityFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginGetIdentityFn)(
     agrPluginModuleHandle hModule,
     agrPluginIdentity* outIdentity);
 
@@ -133,7 +144,7 @@ typedef int (__stdcall *agrPluginGetIdentityFn)(
 // Returns: AGR_PLUGIN_ERROR_NONE on success, or an error code.
 // Idempotent: may be called again after pluginShutdown() without harm.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginInitializeFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginInitializeFn)(
     agrPluginModuleHandle hModule,
     const agrPluginIdentity* identity,
     void** outEngineContext);
@@ -146,7 +157,7 @@ typedef int (__stdcall *agrPluginInitializeFn)(
 // Returns: AGR_PLUGIN_ERROR_NONE on success, or an error code.
 // Must honour the cancel_flag from ctx if set.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginExecuteFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginExecuteFn)(
     agrPluginModuleHandle hModule,
     const void* ctx,            ///< Opaque ExecutionContext pointer
     void* outResult);           ///< Pointer to ExecutionResult struct
@@ -158,7 +169,7 @@ typedef int (__stdcall *agrPluginExecuteFn)(
 // Safe to call multiple times; subsequent calls are no-ops.
 // Returns: AGR_PLUGIN_ERROR_NONE on success, or an error code.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginShutdownFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginShutdownFn)(
     agrPluginModuleHandle hModule);
 
 // ---------------------------------------------------------------------------
@@ -166,7 +177,7 @@ typedef int (__stdcall *agrPluginShutdownFn)(
 // Returns the current lifecycle state of the plugin instance.
 // Returns: agrPluginState value.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginGetStateFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginGetStateFn)(
     agrPluginModuleHandle hModule);
 
 // ---------------------------------------------------------------------------
@@ -175,7 +186,7 @@ typedef int (__stdcall *agrPluginGetStateFn)(
 // outError receives an agrPluginError struct.
 // Returns: AGR_PLUGIN_ERROR_NONE on success, or an error code.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginGetErrorFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginGetErrorFn)(
     agrPluginModuleHandle hModule,
     agrPluginError* outError);
 
@@ -185,7 +196,7 @@ typedef int (__stdcall *agrPluginGetErrorFn)(
 // outManifest receives the capability bitmask and count.
 // Returns: AGR_PLUGIN_ERROR_NONE on success, or an error code.
 // ---------------------------------------------------------------------------
-typedef int (__stdcall *agrPluginGetCapabilitiesFn)(
+typedef int (AGR_PLUGIN_CALL *agrPluginGetCapabilitiesFn)(
     agrPluginModuleHandle hModule,
     agrPluginCapabilityManifest* outManifest);
 
@@ -196,7 +207,7 @@ typedef int (__stdcall *agrPluginGetCapabilitiesFn)(
 // Returns: nullptr if factory cannot create an engine.
 // The host owns the returned engine instance.
 // ---------------------------------------------------------------------------
-typedef void* (__stdcall *agrPluginCreateEngineFn)(
+typedef void* (AGR_PLUGIN_CALL *agrPluginCreateEngineFn)(
     agrPluginModuleHandle hModule,
     const agrPluginIdentity* identity);
 
@@ -229,11 +240,20 @@ typedef struct {
 // including this header to get the __declspec(dllexport) behavior.
 // When using/consuming the DLL, do NOT define that macro.
 // ---------------------------------------------------------------------------
-#ifdef AGR_PLUGIN_BUILDING_DLL
-#define AGR_PLUGIN_EXPORT __declspec(dllexport)
+#if defined(_WIN32)
+#  ifdef AGR_PLUGIN_BUILDING_DLL
+#    define AGR_PLUGIN_EXPORT __declspec(dllexport)
+#  else
+#    define AGR_PLUGIN_EXPORT __declspec(dllimport)
+#  endif
 #else
-#define AGR_PLUGIN_EXPORT __declspec(dllimport)
-#endif // AGR_PLUGIN_BUILDING_DLL
+// On POSIX, symbols are visible by default; use GCC visibility if desired.
+#  if defined(__GNUC__) && __GNUC__ >= 4
+#    define AGR_PLUGIN_EXPORT __attribute__((visibility("default")))
+#  else
+#    define AGR_PLUGIN_EXPORT
+#  endif
+#endif // _WIN32 / AGR_PLUGIN_BUILDING_DLL
 
 // ============================================================================
 // Legacy compatibility macro (Phase 11-era engines)
@@ -249,11 +269,15 @@ typedef struct {
 // These static_asserts help catch ABI mismatches at compile time
 // when building the host (not when building plugins, which are C-only).
 
+// Size assertions: enum sizes vary by compiler/platform (MSVC enums are 4 bytes;
+// GCC may use smaller types unless -fno-short-enums is set). Guard to Windows
+// only where the sizes are known, to avoid false CI failures on Linux.
+#ifdef _WIN32
 static_assert(sizeof(agrPluginIdentity) == 256,
     "agrPluginIdentity must be exactly 256 bytes (64+32+32+64+64)");
-
 static_assert(sizeof(agrPluginError) == 260,
     "agrPluginError must be exactly 260 bytes (4+256)");
+#endif // _WIN32
 
 // The message field inside agrPluginError is 256 bytes + 4 bytes kind +
 // alignment padding to 292 total on 4-byte boundaries.

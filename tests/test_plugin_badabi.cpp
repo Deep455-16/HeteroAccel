@@ -8,11 +8,11 @@
 
 static bool g_other_entry_called = false;
 
-extern "C" __declspec(dllexport) uint32_t __stdcall pluginGetAbiVersion(void) {
+extern "C" AGR_PLUGIN_EXPORT uint32_t AGR_PLUGIN_CALL pluginGetAbiVersion(void) {
     return AGR_PLUGIN_ABI_VERSION + 99; // deliberately incompatible
 }
 
-extern "C" __declspec(dllexport) int __stdcall pluginGetIdentity(
+extern "C" AGR_PLUGIN_EXPORT int AGR_PLUGIN_CALL pluginGetIdentity(
     agrPluginModuleHandle, agrPluginIdentity* out) {
     g_other_entry_called = true;
     if (!out) return AGR_PLUGIN_ERROR_INVALID_REQUEST;
@@ -27,19 +27,19 @@ extern "C" __declspec(dllexport) int __stdcall pluginGetIdentity(
     return AGR_PLUGIN_ERROR_NONE;
 }
 
-extern "C" __declspec(dllexport) int __stdcall pluginInitialize(
+extern "C" AGR_PLUGIN_EXPORT int AGR_PLUGIN_CALL pluginInitialize(
     agrPluginModuleHandle, const agrPluginIdentity*, void**) {
     g_other_entry_called = true;
     return AGR_PLUGIN_ERROR_NONE;
 }
 
-extern "C" __declspec(dllexport) int __stdcall pluginExecute(
+extern "C" AGR_PLUGIN_EXPORT int AGR_PLUGIN_CALL pluginExecute(
     agrPluginModuleHandle, const void*, void*) {
     g_other_entry_called = true;
     return AGR_PLUGIN_ERROR_NONE;
 }
 
-extern "C" __declspec(dllexport) int __stdcall pluginShutdown(agrPluginModuleHandle) {
+extern "C" AGR_PLUGIN_EXPORT int AGR_PLUGIN_CALL pluginShutdown(agrPluginModuleHandle) {
     g_other_entry_called = true;
     return AGR_PLUGIN_ERROR_NONE;
 }
