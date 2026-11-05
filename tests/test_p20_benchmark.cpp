@@ -3,6 +3,21 @@
 // Measures cold load time, warm inference throughput (prompt & generation),
 // TTFT, and peak RSS memory across multiple runs.
 // Exits 77 (SKIP) if model file is absent.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include "hydroxl/HydroXLEngine.h"

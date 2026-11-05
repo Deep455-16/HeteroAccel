@@ -1,6 +1,21 @@
 // tests/test_p20_context_validation.cpp
 // Phase 20: Context length & generation validation for HydroXL native engine.
 // Exits 77 (SKIP) if model file is absent.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include "hydroxl/HydroXLEngine.h"

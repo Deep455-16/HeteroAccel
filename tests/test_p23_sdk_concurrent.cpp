@@ -2,6 +2,21 @@
 // Phase 23: Concurrent Multi-Session SDK Tests
 
 #define _CRT_SECURE_NO_WARNINGS
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 #include "mini_test.h"
 #include <heteroaccel/heteroaccel.h>
 #include <heteroaccel/HeteroAccel.hpp>

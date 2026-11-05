@@ -1,6 +1,21 @@
 // tests/test_p25_release.cpp
 // Phase 25: Release API surface smoke test — verify all Phase 25 symbols are present
 // and core lifecycle does not crash on edge inputs.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include <heteroaccel/heteroaccel.h>

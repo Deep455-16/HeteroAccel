@@ -1,5 +1,20 @@
 // tests/test_p25_orchestrator_cli.cpp
 // Phase 25: EngineOrchestrator backend selection — matches what the CLI `infer` command uses
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include "orchestration/EngineOrchestrator.h"

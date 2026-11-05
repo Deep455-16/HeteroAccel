@@ -1,5 +1,20 @@
 // tests/test_p24_perf_profile.cpp
 // Phase 24: Persistent Performance Profiles Tests
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include "orchestration/PerfProfile.h"

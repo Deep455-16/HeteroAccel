@@ -1,5 +1,20 @@
 // tests/test_p21_backend_capabilities.cpp
 // Phase 21: Backend Capability Unit Tests
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include "orchestration/BackendCapabilities.h"

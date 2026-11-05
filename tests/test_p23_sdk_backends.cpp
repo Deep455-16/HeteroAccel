@@ -1,5 +1,20 @@
 // tests/test_p23_sdk_backends.cpp
 // Phase 23: Backend Enumeration, Introspection, and Fallback Tests
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "mini_test.h"
 #include <heteroaccel/heteroaccel.h>
