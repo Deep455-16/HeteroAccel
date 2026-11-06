@@ -48,6 +48,15 @@ public:
         size_t estimated_memory_bytes = 0;
     };
 
+    /// What actually happened in the most recent create_engine() call.
+    struct CreationReport {
+        std::string requested_backend;  // forced backend, or the auto-selected one
+        std::string selected_backend;   // backend chosen by select_backend()
+        std::string actual_backend;     // backend of the engine returned ("" if none)
+        bool fell_back = false;         // true if actual != requested (CPU fallback)
+        std::string failure_reason;     // why the primary backend was not used
+    };
+
     using EngineFactory = std::function<std::shared_ptr<IInferenceEngine>()>;
 
     static EngineOrchestrator& instance();
@@ -64,6 +73,8 @@ public:
         const SelectionRequest& req,
         std::string& error_out
     );
+
+    CreationReport last_creation_report() const;
 
     // Record observed performance for future selection decisions
     void record_performance(const std::string& backend_id,
@@ -84,6 +95,7 @@ private:
     std::map<std::string, float> perf_history_;  // backend_id -> best observed tok/s
     std::map<std::string, size_t> rss_history_;   // backend_id -> peak rss
     std::map<std::string, EngineFactory> factories_;
+    CreationReport last_report_;
     mutable std::mutex mu_;
 };
 

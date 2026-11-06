@@ -11,7 +11,9 @@ namespace agr {
 // a reason, and the rest of the application continues normally.
 class CUDADetector {
 public:
-    static CUDAInfo detect();
+    /// @param query_free_memory when true, queries live free VRAM per device
+    ///        (this creates a CUDA primary context on each device).
+    static CUDAInfo detect(bool query_free_memory = false);
 };
 
 } // namespace agr

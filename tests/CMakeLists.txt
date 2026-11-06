@@ -310,3 +310,23 @@ target_link_libraries(test_p25_release    PRIVATE agr_sdk)
 
 agr_add_test(test_p25_perf_persist        test_p25_perf_persist.cpp)
 target_link_libraries(test_p25_perf_persist PRIVATE agr_sdk)
+
+# Phase 26 - Real CUDA Backend & Explicit Backend Selection
+agr_add_test(test_p26_cuda_runtime_errors test_p26_cuda_runtime_errors.cpp)
+agr_add_test(test_p26_cuda_runtime_hw     test_p26_cuda_runtime_hw.cpp)
+agr_add_test(test_p26_backend_selection   test_p26_backend_selection.cpp)
+agr_add_test(test_p26_llama_selection     test_p26_llama_selection.cpp)
+agr_add_test(test_p26_cuda_real_model     test_p26_cuda_real_model.cpp)
+
+set_tests_properties(
+    test_p26_cuda_runtime_hw
+    test_p26_cuda_real_model
+    PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 180
+)
+set_tests_properties(
+    test_p26_llama_selection
+    PROPERTIES
+        TIMEOUT 180
+)

@@ -939,9 +939,11 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
     if (model_path.empty()) {
         std::cerr << "ERROR: No model path provided.\n"
                   << "  Usage: adaptive-gpu infer --model <path.gguf> [--prompt <text>]\n"
-                  << "                            [--backend cpu|vulkan] [--max-tokens <N>]\n";
+                  << "                            [--backend cpu|vulkan|cuda] [--max-tokens <N>]\n";
         return 1;
     }
+    if (forced_backend == "cpu") forced_backend = "hydroxl_cpu";
+    else if (forced_backend == "vulkan") forced_backend = "hydroxl_vulkan";
 
     using namespace agr::orchestration;
 
@@ -993,9 +995,13 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
     // Create and initialize the selected engine
     std::string engine_error;
     auto engine = orch.create_engine(sel, req, engine_error);
+    auto create_rep = orch.last_creation_report();
     if (!engine) {
         std::cerr << "ERROR: Failed to create engine '" << sel.selected_backend << "': " << engine_error << "\n";
         return 1;
+    }
+    if (create_rep.fell_back) {
+        std::cout << "Fallback: Using '" << create_rep.actual_backend << "' (reason: " << create_rep.failure_reason << ")\n";
     }
 
     std::cout << "Generating...\n";

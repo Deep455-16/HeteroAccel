@@ -126,18 +126,35 @@ void HardwareDetector::detect() {
         }
     }
 
-    // 4. Detect CUDA
-#ifdef HETEROACCEL_CUDA_ENABLED
+    // 4. Detect CUDA hardware. Detection always runs (it only needs the NVIDIA
+    //    driver); whether CUDA *inference* is available additionally requires a
+    //    binary built with HETEROACCEL_ENABLE_CUDA, which gates the "cuda" backend
+    //    registration (see OrchestratorInit.cpp). Detection != inference.
+    cuda_reason_.clear();
     auto cuda_info = CUDADetector::detect();
     if (cuda_info.available && !cuda_info.devices.empty()) {
-        has_cuda_ = true;
         for (const auto& cdev : cuda_info.devices) {
+            if (!cdev.meets_min_capability) {
+                if (cuda_reason_.empty()) {
+                    cuda_reason_ = "CUDA device '" + cdev.name + "' has compute capability " +
+                                   std::to_string(cdev.compute_major) + "." +
+                                   std::to_string(cdev.compute_minor) +
+                                   " (< 5.0 required by ggml-cuda)";
+                }
+                continue;
+            }
+            has_cuda_ = true;
             bool found_existing = false;
             for (auto& existing : devices_) {
                 if (existing.name.find(cdev.name) != std::string::npos ||
                     cdev.name.find(existing.name) != std::string::npos) {
                     existing.cuda_ok = true;
                     existing.api_support |= static_cast<uint32_t>(DeviceInfo::APISupport::CUDA);
+                    existing.cuda_device_index = cdev.index;
+                    existing.cuda_compute_major = cdev.compute_major;
+                    existing.cuda_compute_minor = cdev.compute_minor;
+                    existing.cuda_total_bytes = cdev.total_memory_bytes;
+                    if (existing.vram_bytes == 0) existing.vram_bytes = cdev.total_memory_bytes;
                     found_existing = true;
                     break;
                 }
@@ -147,20 +164,22 @@ void HardwareDetector::detect() {
                 cuda_dev.name = cdev.name;
                 cuda_dev.vendor = DeviceInfo::Vendor::NVIDIA;
                 cuda_dev.api_support = static_cast<uint32_t>(DeviceInfo::APISupport::CUDA);
-                cuda_dev.vram_bytes = 0; // if unknown
+                cuda_dev.vram_bytes = cdev.total_memory_bytes;
                 cuda_dev.system_ram_bytes = total_system_ram_;
                 cuda_dev.vulkan_ok = false;
                 cuda_dev.cuda_ok = true;
                 cuda_dev.vulkan_queue_count = 0;
                 cuda_dev.driver_version = std::to_string(cuda_info.driver_version);
+                cuda_dev.cuda_device_index = cdev.index;
+                cuda_dev.cuda_compute_major = cdev.compute_major;
+                cuda_dev.cuda_compute_minor = cdev.compute_minor;
+                cuda_dev.cuda_total_bytes = cdev.total_memory_bytes;
                 devices_.push_back(cuda_dev);
             }
         }
+    } else {
+        cuda_reason_ = cuda_info.unavailable_reason;
     }
-#else
-    has_cuda_ = false;
-#endif
-
     detected_ = true;
 }
 
@@ -190,6 +209,23 @@ bool HardwareDetector::has_vulkan() const {
 
 bool HardwareDetector::has_cuda() const {
     return has_cuda_;
+}
+
+bool HardwareDetector::cuda_inference_compiled() {
+#if defined(HETEROACCEL_CUDA_ENABLED) && HETEROACCEL_CUDA_ENABLED
+    return true;
+#else
+    return false;
+#endif
+}
+
+const DeviceInfo* HardwareDetector::best_cuda_gpu() const {
+    const DeviceInfo* best = nullptr;
+    for (const auto& dev : devices_) {
+        if (!dev.cuda_ok && !(dev.api_support & static_cast<uint32_t>(DeviceInfo::APISupport::CUDA))) continue;
+        if (!best || dev.vram_bytes > best->vram_bytes) best = &dev;
+    }
+    return best;
 }
 
 const DeviceInfo* HardwareDetector::best_gpu() const {
@@ -226,6 +262,10 @@ void HardwareDetector::print_summary(std::ostream& out) const {
     out << " Available System RAM: " << (available_system_ram() / (1024 * 1024)) << " MB\n";
     out << " Vulkan Compute OK:    " << (has_vulkan_ ? "YES" : "NO") << "\n";
     out << " CUDA Compute OK:      " << (has_cuda_ ? "YES" : "NO") << "\n";
+    out << " CUDA Inference Built: " << (cuda_inference_compiled() ? "YES" : "NO (configure with -DHETEROACCEL_ENABLE_CUDA=ON)") << "\n";
+    if (!has_cuda_ && !cuda_reason_.empty()) {
+        out << " CUDA Unavailable:     " << cuda_reason_ << "\n";
+    }
     out << " Total Devices Found:  " << devices_.size() << "\n\n";
 
     for (size_t i = 0; i < devices_.size(); ++i) {
@@ -240,6 +280,10 @@ void HardwareDetector::print_summary(std::ostream& out) const {
         out << "\n";
         if (d.vram_bytes > 0) {
             out << "     VRAM:         " << (d.vram_bytes / (1024 * 1024)) << " MB\n";
+        }
+        if (d.cuda_device_index >= 0) {
+            out << "     CUDA Dev:     #" << d.cuda_device_index << ", compute capability "
+                << d.cuda_compute_major << "." << d.cuda_compute_minor << "\n";
         }
         if (!d.vulkan_device_name.empty()) {
             out << "     Vulkan Dev:   " << d.vulkan_device_name << "\n";
@@ -267,6 +311,7 @@ void HardwareDetector::reset() {
     mock_avail_ram_ = 0;
     has_vulkan_ = false;
     has_cuda_ = false;
+    cuda_reason_.clear();
 }
 
 void HardwareDetector::set_mock_environment(const std::vector<DeviceInfo>& mock_devices,

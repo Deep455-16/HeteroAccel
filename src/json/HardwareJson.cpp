@@ -188,7 +188,12 @@ std::string toJson(const HardwareInfo& info, bool pretty) {
         out << "{";
         w.indentLevel++;
         w.num("index", static_cast<unsigned long long>(d.index), true);
-        w.str("name", d.name, false);
+        w.str("name", d.name, true);
+        w.num("compute_capability_major", static_cast<unsigned long long>(d.compute_major), true);
+        w.num("compute_capability_minor", static_cast<unsigned long long>(d.compute_minor), true);
+        w.num("total_memory_bytes", static_cast<unsigned long long>(d.total_memory_bytes), true);
+        w.num("multiprocessor_count", static_cast<unsigned long long>(d.multiprocessor_count), true);
+        w.bnum("meets_min_capability", d.meets_min_capability, false);
         w.indentLevel--;
         w.nl();
         out << "}" << (i + 1 < info.cuda.devices.size() ? "," : "");

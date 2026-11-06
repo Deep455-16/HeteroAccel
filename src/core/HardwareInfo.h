@@ -91,6 +91,13 @@ struct VulkanInfo {
 struct CUDADeviceInfo {
     int index = 0;
     std::string name;
+    int compute_major = 0;
+    int compute_minor = 0;
+    size_t total_memory_bytes = 0;
+    size_t free_memory_bytes = 0;      // live driver query; 0 if unknown
+    int multiprocessor_count = 0;
+    bool integrated = false;
+    bool meets_min_capability = false; // compute capability >= 5.0 (GGML_CUDA minimum)
 };
 
 struct CUDAInfo {

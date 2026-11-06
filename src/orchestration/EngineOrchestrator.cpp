@@ -3,6 +3,7 @@
 
 #include "orchestration/EngineOrchestrator.h"
 #include "orchestration/HydroXLEngineAdapter.h"
+#include "orchestration/LlamaCppEngineAdapter.h"
 #include "orchestration/MemoryEstimator.h"
 
 #include <algorithm>
@@ -12,6 +13,28 @@
 namespace agr {
 namespace orchestration {
 
+namespace {
+// Registers the built-in engine factories. The "cuda" factory exists only in
+// binaries compiled with HETEROACCEL_ENABLE_CUDA (llama.cpp GGML_CUDA).
+void register_builtin_factories(std::map<std::string, EngineOrchestrator::EngineFactory>& f) {
+    f["hydroxl_cpu"] = []() {
+        return std::make_shared<HydroXLCpuEngineAdapter>();
+    };
+    f["hydroxl_vulkan"] = []() {
+        return std::make_shared<HydroXLVulkanEngineAdapter>();
+    };
+#if defined(HETEROACCEL_CUDA_ENABLED) && HETEROACCEL_CUDA_ENABLED
+    f["cuda"] = []() -> std::shared_ptr<IInferenceEngine> {
+        int dev = 0;
+        if (const auto* g = HardwareDetector::instance().best_cuda_gpu()) {
+            if (g->cuda_device_index >= 0) dev = g->cuda_device_index;
+        }
+        return std::make_shared<LlamaCppEngineAdapter>("cuda", "cuda", dev);
+    };
+#endif
+}
+} // namespace
+
 EngineOrchestrator& EngineOrchestrator::instance() {
     static EngineOrchestrator inst;
     return inst;
@@ -19,12 +42,7 @@ EngineOrchestrator& EngineOrchestrator::instance() {
 
 EngineOrchestrator::EngineOrchestrator() {
     // Register default built-in engine factories
-    factories_["hydroxl_cpu"] = []() {
-        return std::make_shared<HydroXLCpuEngineAdapter>();
-    };
-    factories_["hydroxl_vulkan"] = []() {
-        return std::make_shared<HydroXLVulkanEngineAdapter>();
-    };
+    register_builtin_factories(factories_);
 }
 
 void EngineOrchestrator::register_backend(BackendCapabilities caps) {
@@ -49,12 +67,8 @@ void EngineOrchestrator::reset() {
     perf_history_.clear();
     rss_history_.clear();
     factories_.clear();
-    factories_["hydroxl_cpu"] = []() {
-        return std::make_shared<HydroXLCpuEngineAdapter>();
-    };
-    factories_["hydroxl_vulkan"] = []() {
-        return std::make_shared<HydroXLVulkanEngineAdapter>();
-    };
+    register_builtin_factories(factories_);
+    last_report_ = CreationReport{};
 }
 
 std::vector<BackendCapabilities> EngineOrchestrator::backends() const {
@@ -115,7 +129,13 @@ EngineOrchestrator::SelectionResult EngineOrchestrator::select_backend(const Sel
                 }
             }
         } else {
-            res.rejected_backends.push_back(req.forced_backend + ": backend not registered");
+            std::string nreg = req.forced_backend + ": backend not registered";
+            if (req.forced_backend == "cuda") {
+                nreg += HardwareDetector::cuda_inference_compiled()
+                            ? " (CUDA inference is compiled in but no usable CUDA device was detected: " + hw.cuda_unavailable_reason() + ")"
+                            : " (binary built without HETEROACCEL_ENABLE_CUDA)";
+            }
+            res.rejected_backends.push_back(nreg);
             if (req.allow_cpu_fallback) {
                 res.selected_backend = "hydroxl_cpu";
                 res.is_fallback = true;
@@ -190,7 +210,8 @@ EngineOrchestrator::SelectionResult EngineOrchestrator::select_backend(const Sel
         // Check RAM / VRAM requirement
         if (memory_needed > 0) {
             if (b.requires_vulkan || b.requires_cuda) {
-                const auto* gpu = hw.best_gpu();
+                const auto* gpu = b.requires_cuda ? hw.best_cuda_gpu() : nullptr;
+                if (!gpu) gpu = hw.best_gpu();
                 if (gpu && gpu->vram_bytes > 0 && gpu->vram_bytes < memory_needed) {
                     res.rejected_backends.push_back(b.backend_id + ": insufficient VRAM (have " +
                                                     std::to_string(gpu->vram_bytes / (1024 * 1024)) + " MB, need " +
@@ -272,8 +293,19 @@ std::shared_ptr<IInferenceEngine> EngineOrchestrator::create_engine(
 ) {
     std::lock_guard<std::mutex> lk(mu_);
 
+    CreationReport report;
+    report.requested_backend = req.forced_backend.empty() ? sel.selected_backend : req.forced_backend;
+    report.selected_backend  = sel.selected_backend;
+    report.fell_back         = sel.is_fallback;
+    if (sel.is_fallback) {
+        report.failure_reason = sel.reason;
+        for (const auto& r : sel.rejected_backends) report.failure_reason += "; " + r;
+    }
+
     if (sel.selected_backend.empty()) {
         error_out = "Cannot create engine: no backend was selected (" + sel.reason + ")";
+        report.failure_reason = error_out;
+        last_report_ = report;
         return nullptr;
     }
 
@@ -285,41 +317,62 @@ std::shared_ptr<IInferenceEngine> EngineOrchestrator::create_engine(
         return nullptr;
     };
 
+    auto try_cpu_fallback = [&](const std::string& primary_failure) -> std::shared_ptr<IInferenceEngine> {
+        auto fallback = create_named("hydroxl_cpu");
+        std::string fallback_err;
+        if (fallback && fallback->initialize(req.model_path, fallback_err)) {
+            error_out.clear();
+            report.fell_back = true;
+            report.failure_reason = primary_failure;
+            report.actual_backend = fallback->backend_id();
+            last_report_ = report;
+            return fallback;
+        }
+        error_out = "Primary backend '" + sel.selected_backend + "' failed (" + primary_failure +
+                    "); CPU fallback also failed (" + fallback_err + ")";
+        report.failure_reason = error_out;
+        last_report_ = report;
+        return nullptr;
+    };
+
     auto engine = create_named(sel.selected_backend);
     if (!engine) {
-        error_out = "Factory for backend '" + sel.selected_backend + "' is not registered";
-        if (req.allow_cpu_fallback && sel.selected_backend != "hydroxl_cpu") {
-            auto fallback = create_named("hydroxl_cpu");
-            if (fallback && fallback->initialize(req.model_path, error_out)) {
-                return fallback;
-            }
+        std::string why = "Factory for backend '" + sel.selected_backend + "' is not registered";
+        if (sel.selected_backend == "cuda") {
+            why += " (this binary was built without HETEROACCEL_ENABLE_CUDA)";
         }
+        error_out = why;
+        if (req.allow_cpu_fallback && sel.selected_backend != "hydroxl_cpu") {
+            return try_cpu_fallback(why);
+        }
+        report.failure_reason = why;
+        last_report_ = report;
         return nullptr;
     }
 
-    if (engine->initialize(req.model_path, error_out)) {
+    std::string init_err;
+    if (engine->initialize(req.model_path, init_err)) {
+        error_out.clear();
+        report.actual_backend = engine->backend_id();
+        last_report_ = report;
         return engine;
     }
+    error_out = init_err;
 
     // Primary initialization failed: try CPU fallback if permitted
     if (req.allow_cpu_fallback && sel.selected_backend != "hydroxl_cpu") {
-        std::string fallback_err;
-        auto fallback = create_named("hydroxl_cpu");
-        if (fallback) {
-            if (fallback->initialize(req.model_path, fallback_err)) {
-                error_out.clear();
-                return fallback;
-            } else {
-                error_out = "Primary backend '" + sel.selected_backend + "' failed (" + error_out +
-                            "); CPU fallback also failed (" + fallback_err + ")";
-                return nullptr;
-            }
-        }
+        return try_cpu_fallback(init_err);
     }
 
+    report.failure_reason = init_err;
+    last_report_ = report;
     return nullptr;
 }
 
+EngineOrchestrator::CreationReport EngineOrchestrator::last_creation_report() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return last_report_;
+}
 void EngineOrchestrator::record_performance(const std::string& backend_id,
                                             float tokens_per_second,
                                             size_t peak_rss_bytes) {

@@ -1,125 +1,48 @@
 #include "hardware/CUDADetector.h"
-
-#if defined(_WIN32)
-    #include <windows.h>
-    using LibHandle = HMODULE;
-#else
-    #include <dlfcn.h>
-    using LibHandle = void*;
-#endif
+#include "cuda/CudaRuntime.h"
 
 namespace agr {
 
-namespace {
-
-// Minimal subset of the CUDA Driver API declared by hand so this file
-// compiles with zero CUDA Toolkit dependency. Types mirror cuda.h.
-using CUresult = int;
-using CUdevice = int;
-
-using PFN_cuInit = CUresult (*)(unsigned int);
-using PFN_cuDriverGetVersion = CUresult (*)(int*);
-using PFN_cuDeviceGetCount = CUresult (*)(int*);
-using PFN_cuDeviceGet = CUresult (*)(CUdevice*, int);
-using PFN_cuDeviceGetName = CUresult (*)(char*, int, CUdevice);
-
-constexpr CUresult CUDA_SUCCESS_VALUE = 0;
-
-LibHandle openCudaDriverLibrary() {
-#if defined(_WIN32)
-    return LoadLibraryA("nvcuda.dll");
-#else
-    LibHandle h = dlopen("libcuda.so.1", RTLD_NOW);
-    if (h == nullptr) {
-        h = dlopen("libcuda.so", RTLD_NOW);
-    }
-    return h;
-#endif
-}
-
-void* resolveSymbol(LibHandle lib, const char* name) {
-#if defined(_WIN32)
-    return reinterpret_cast<void*>(GetProcAddress(lib, name));
-#else
-    return dlsym(lib, name);
-#endif
-}
-
-void closeLibrary(LibHandle lib) {
-#if defined(_WIN32)
-    if (lib) FreeLibrary(lib);
-#else
-    if (lib) dlclose(lib);
-#endif
-}
-
-} // namespace
-
-CUDAInfo CUDADetector::detect() {
+// Detection reuses the real CUDA driver layer (agr::cuda::Runtime), which loads
+// the driver dynamically; no CUDA Toolkit is needed to build this file.
+CUDAInfo CUDADetector::detect(bool query_free_memory) {
     CUDAInfo info;
 
-    LibHandle lib = openCudaDriverLibrary();
-    if (lib == nullptr) {
+    cuda::Runtime& rt = cuda::Runtime::shared();
+    if (!rt.initialize()) {
         info.available = false;
-        info.unavailable_reason = "CUDA driver library not found (nvcuda.dll / libcuda.so absent) -- no NVIDIA driver installed";
+        info.unavailable_reason = rt.unavailableReason();
         return info;
     }
 
-    auto cuInitFn = reinterpret_cast<PFN_cuInit>(resolveSymbol(lib, "cuInit"));
-    auto cuDriverGetVersionFn = reinterpret_cast<PFN_cuDriverGetVersion>(resolveSymbol(lib, "cuDriverGetVersion"));
-    auto cuDeviceGetCountFn = reinterpret_cast<PFN_cuDeviceGetCount>(resolveSymbol(lib, "cuDeviceGetCount"));
-    auto cuDeviceGetFn = reinterpret_cast<PFN_cuDeviceGet>(resolveSymbol(lib, "cuDeviceGet"));
-    auto cuDeviceGetNameFn = reinterpret_cast<PFN_cuDeviceGetName>(resolveSymbol(lib, "cuDeviceGetName"));
+    info.driver_version = rt.driverVersion();
 
-    if (!cuInitFn || !cuDriverGetVersionFn || !cuDeviceGetCountFn || !cuDeviceGetFn || !cuDeviceGetNameFn) {
+    if (rt.devices().empty()) {
         info.available = false;
-        info.unavailable_reason = "CUDA driver library found but required symbols were missing";
-        closeLibrary(lib);
+        info.unavailable_reason = rt.unavailableReason().empty()
+            ? "CUDA driver initialized successfully, but zero CUDA-capable devices were found"
+            : rt.unavailableReason();
         return info;
     }
 
-    CUresult initResult = cuInitFn(0);
-    if (initResult != CUDA_SUCCESS_VALUE) {
-        info.available = false;
-        info.unavailable_reason = "cuInit() failed (CUresult=" + std::to_string(initResult) + ") -- driver present but no usable NVIDIA device/context";
-        closeLibrary(lib);
-        return info;
-    }
-
-    int driverVersion = 0;
-    cuDriverGetVersionFn(&driverVersion);
-    info.driver_version = driverVersion;
-
-    int deviceCount = 0;
-    cuDeviceGetCountFn(&deviceCount);
-
-    if (deviceCount == 0) {
-        info.available = false;
-        info.unavailable_reason = "CUDA driver initialized successfully, but zero CUDA-capable devices were found";
-        closeLibrary(lib);
-        return info;
-    }
-
-    for (int i = 0; i < deviceCount; ++i) {
-        CUdevice device = 0;
-        if (cuDeviceGetFn(&device, i) != CUDA_SUCCESS_VALUE) {
-            continue;
+    for (const auto& d : rt.devices()) {
+        CUDADeviceInfo di;
+        di.index = d.index;
+        di.name = d.name;
+        di.compute_major = d.compute_major;
+        di.compute_minor = d.compute_minor;
+        di.total_memory_bytes = d.total_memory_bytes;
+        di.multiprocessor_count = d.multiprocessor_count;
+        di.integrated = d.integrated;
+        di.meets_min_capability = cuda::meetsMinimumCapability(d);
+        if (query_free_memory) {
+            cuda::MemoryInfo mi;
+            if (rt.memoryInfo(d.index, mi)) di.free_memory_bytes = mi.free_bytes;
         }
-        char name[256] = {0};
-        cuDeviceGetNameFn(name, sizeof(name), device);
-
-        CUDADeviceInfo devInfo;
-        devInfo.index = i;
-        devInfo.name = name;
-        info.devices.push_back(devInfo);
+        info.devices.push_back(di);
     }
 
     info.available = !info.devices.empty();
-    if (!info.available) {
-        info.unavailable_reason = "Devices were reported but none could be queried successfully";
-    }
-
-    closeLibrary(lib);
     return info;
 }
 

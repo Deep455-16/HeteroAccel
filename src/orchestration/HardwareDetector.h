@@ -32,6 +32,12 @@ struct DeviceInfo {
     int vulkan_queue_count = 0;
     std::string vulkan_device_name;
     std::string driver_version;
+
+    // CUDA details (Phase 26); populated only for devices CUDA can enumerate.
+    int cuda_device_index = -1;      // index in the CUDA driver's device list
+    int cuda_compute_major = 0;
+    int cuda_compute_minor = 0;
+    size_t cuda_total_bytes = 0;
 };
 
 inline const char* vendorToString(DeviceInfo::Vendor v) {
@@ -55,6 +61,12 @@ public:
     bool has_vulkan() const;
     bool has_cuda() const;
     const DeviceInfo* best_gpu() const;  // returns nullptr if CPU-only
+    const DeviceInfo* best_cuda_gpu() const;  // CUDA-usable device with most VRAM; nullptr if none
+
+    /// True when this binary was built with HETEROACCEL_ENABLE_CUDA (llama.cpp GGML_CUDA).
+    static bool cuda_inference_compiled();
+    /// Why CUDA is not usable (empty when has_cuda()).
+    const std::string& cuda_unavailable_reason() const { return cuda_reason_; }
     void print_summary(std::ostream& out) const;
 
     // Test support / simulation helpers
@@ -72,6 +84,7 @@ private:
     mutable size_t mock_avail_ram_ = 0;
     bool has_vulkan_ = false;
     bool has_cuda_ = false;
+    std::string cuda_reason_;
     bool detected_ = false;
     bool is_mocked_ = false;
 };

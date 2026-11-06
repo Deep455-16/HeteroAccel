@@ -95,12 +95,41 @@ endif()
 
 include(FetchContent)
 
+# --- Phase 26: optional real CUDA inference ---------------------------------
+# OFF by default so machines without the CUDA Toolkit build CPU/Vulkan normally.
+# ON compiles llama.cpp with GGML_CUDA (requires the CUDA Toolkit + nvcc) and
+# registers the "cuda" orchestrator backend. CUDA *detection* (driver query) and
+# the CUDA memory layer are always built; they need no toolkit.
+option(HETEROACCEL_ENABLE_CUDA "Build llama.cpp with the CUDA backend (GGML_CUDA) for NVIDIA GPU inference" OFF)
+set(HETEROACCEL_CUDA_ARCHITECTURES "" CACHE STRING
+    "Semicolon-separated CUDA architectures (e.g. 75;86;89). Empty = llama.cpp default.")
+
+if(HETEROACCEL_ENABLE_CUDA)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(NOT CMAKE_CUDA_COMPILER)
+        message(FATAL_ERROR
+            "HETEROACCEL_ENABLE_CUDA=ON but no CUDA compiler (nvcc) was found. "
+            "Install the NVIDIA CUDA Toolkit (and a supported host compiler), make nvcc "
+            "discoverable (PATH / CUDACXX / -DCMAKE_CUDA_COMPILER=...), or configure "
+            "with -DHETEROACCEL_ENABLE_CUDA=OFF for a CPU/Vulkan-only build.")
+    endif()
+    find_package(CUDAToolkit REQUIRED)
+    message(STATUS "CUDA inference ENABLED (CUDA Toolkit ${CUDAToolkit_VERSION}, nvcc ${CMAKE_CUDA_COMPILER})")
+    set(GGML_CUDA ON CACHE BOOL "Enable CUDA backend in ggml/llama.cpp" FORCE)
+    if(HETEROACCEL_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES "${HETEROACCEL_CUDA_ARCHITECTURES}" CACHE STRING "" FORCE)
+    endif()
+else()
+    set(GGML_CUDA OFF CACHE BOOL "Enable CUDA backend in ggml/llama.cpp" FORCE)
+    message(STATUS "CUDA inference disabled (configure with -DHETEROACCEL_ENABLE_CUDA=ON to enable)")
+endif()
+
 set(GGML_VULKAN          ON  CACHE BOOL "Enable Vulkan backend in ggml/llama.cpp" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
-set(GGML_CUDA            OFF CACHE BOOL "Disable CUDA" FORCE)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL "Force static libraries" FORCE)
 
 FetchContent_Declare(
@@ -135,6 +164,8 @@ add_library(agr_core STATIC
     src/hardware/VulkanDetector.cpp
     src/hardware/CUDADetector.cpp
     src/hardware/HardwareDetector.cpp
+    src/platform/DynamicLibrary.cpp
+    src/cuda/CudaRuntime.cpp
     src/json/HardwareJson.cpp
     src/gpu/CpuReference.cpp
     src/gpu/ShaderLocator.cpp
@@ -149,6 +180,13 @@ target_include_directories(agr_core PUBLIC
 target_compile_definitions(agr_core PUBLIC
     AGR_SHADER_BUILD_DIR="${CMAKE_BINARY_DIR}/shaders"
 )
+
+# Visible to every target (agr_core is linked everywhere): is CUDA inference built in?
+if(HETEROACCEL_ENABLE_CUDA)
+    target_compile_definitions(agr_core PUBLIC HETEROACCEL_CUDA_ENABLED=1)
+else()
+    target_compile_definitions(agr_core PUBLIC HETEROACCEL_CUDA_ENABLED=0)
+endif()
 
 if(Vulkan_FOUND)
     target_link_libraries(agr_core PUBLIC Vulkan::Vulkan)
@@ -438,7 +476,7 @@ target_link_libraries(agr_engine PUBLIC
     agr_core
 )
 
-if(GGML_CUDA)
+if(HETEROACCEL_ENABLE_CUDA)
     target_compile_definitions(agr_engine PUBLIC AGR_GGML_CUDA=1)
 else()
     target_compile_definitions(agr_engine PUBLIC AGR_GGML_CUDA=0)
@@ -654,6 +692,7 @@ target_include_directories(agr_orchestration PUBLIC
 
 target_link_libraries(agr_orchestration PUBLIC
     agr_hydroxl
+    agr_llm
     agr_core
     agr_plugin
 )

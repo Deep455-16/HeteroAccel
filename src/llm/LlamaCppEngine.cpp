@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -35,12 +36,37 @@ double nowMs() {
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
+std::string lowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return s;
+}
+
+// ggml backend registry name ("CUDA", "Vulkan", "CPU", ...) for a device.
+std::string deviceKind(ggml_backend_dev_t dev) {
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    const char* n = reg ? ggml_backend_reg_name(reg) : nullptr;
+    return lowerCopy(n ? n : "");
+}
+
+// GPU-class devices of one backend kind, in ggml enumeration order.
+std::vector<ggml_backend_dev_t> gpuDevicesOfKind(const std::string& kind) {
+    std::vector<ggml_backend_dev_t> out;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        auto t = ggml_backend_dev_type(d);
+        if (t != GGML_BACKEND_DEVICE_TYPE_GPU && t != GGML_BACKEND_DEVICE_TYPE_IGPU) continue;
+        if (deviceKind(d) == kind) out.push_back(d);
+    }
+    return out;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
 // Global log callback (llama.cpp allows exactly one)
 // ---------------------------------------------------------------------------
-void LlamaCppEngine::logCallback(int /*level*/, const char* text, void* /*user_data*/) {
+void LlamaCppEngine::logCallback(int level, const char* text, void* /*user_data*/) {
     if (!text) return;
     std::string msg(text);
     
@@ -69,6 +95,11 @@ void LlamaCppEngine::logCallback(int /*level*/, const char* text, void* /*user_d
     if (!s_currentEngine_) return;
     LlamaCppEngine* eng = s_currentEngine_;
 
+    // Capture ERROR-level llama.cpp/ggml lines (e.g. CUDA out-of-memory) so a
+    // failed load can report the real cause rather than a generic message.
+    if (level == 4 /*GGML_LOG_LEVEL_ERROR*/ && eng->initErrorLog_.size() < 2048) {
+        eng->initErrorLog_ += msg;
+    }
     // Detect GPU layer count from lines like:
     // "llm_load_tensors: offloaded 24/24 layers to GPU"
     if (msg.find("offloaded") != std::string::npos && msg.find("layers to GPU") != std::string::npos) {
@@ -134,6 +165,76 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = config_.effective_gpu_layers();
 
+    // Explicit backend selection: restrict llama.cpp to exactly one device kind.
+    // Storage must outlive llama_model_load_from_file (NULL-terminated list).
+    std::vector<ggml_backend_dev_t> selectedDevices;
+    const std::string pref = lowerCopy(config_.backend_preference);
+    const bool explicitPref = !pref.empty() && pref != "auto";
+    initErrorLog_.clear();
+    activeBackend_.clear();
+    activeDevice_.clear();
+    devTotal_ = devFree_ = 0;
+
+    if (explicitPref) {
+        if (pref == "cpu") {
+            config_.cpu_only     = true;
+            mparams.n_gpu_layers = 0;
+            selectedDevices.push_back(nullptr);          // empty device list: CPU only
+            activeBackend_ = "CPU";
+        } else if (pref == "cuda" || pref == "vulkan") {
+            auto devs = gpuDevicesOfKind(pref);
+            const std::string label = (pref == "cuda") ? "CUDA" : "Vulkan";
+            if (devs.empty()) {
+                lastError_ = label + " backend unavailable: llama.cpp was " +
+                             (pref == "cuda" ? "not built with GGML_CUDA (configure with -DHETEROACCEL_ENABLE_CUDA=ON) or no usable CUDA device exists"
+                                             : "not built with GGML_VULKAN or no usable Vulkan device exists");
+                s_currentEngine_ = nullptr;
+                {
+                    std::lock_guard<std::mutex> lk(s_backendMutex);
+                    s_backendRefCount--;
+                    if (s_backendRefCount == 0) llama_backend_free();
+                }
+                backendInited_ = false;
+                return false;
+            }
+            int idx = config_.gpu_device_index;
+            if (idx < 0 || idx >= static_cast<int>(devs.size())) {
+                lastError_ = label + " device index " + std::to_string(idx) + " out of range (" +
+                             std::to_string(devs.size()) + " device(s) available)";
+                s_currentEngine_ = nullptr;
+                {
+                    std::lock_guard<std::mutex> lk(s_backendMutex);
+                    s_backendRefCount--;
+                    if (s_backendRefCount == 0) llama_backend_free();
+                }
+                backendInited_ = false;
+                return false;
+            }
+            ggml_backend_dev_t dev = devs[static_cast<size_t>(idx)];
+            selectedDevices.push_back(dev);
+            selectedDevices.push_back(nullptr);
+            mparams.devices    = selectedDevices.data();
+            mparams.main_gpu   = 0;
+            mparams.split_mode = LLAMA_SPLIT_MODE_NONE;
+            const char* desc = ggml_backend_dev_description(dev);
+            activeDevice_  = desc ? desc : "";
+            activeBackend_ = label;
+            if (config_.effective_gpu_layers() <= 0) activeBackend_ = "CPU";
+        } else {
+            lastError_ = "Unknown backend preference '" + config_.backend_preference +
+                         "' (expected auto, cpu, cuda or vulkan)";
+            s_currentEngine_ = nullptr;
+            {
+                std::lock_guard<std::mutex> lk(s_backendMutex);
+                s_backendRefCount--;
+                if (s_backendRefCount == 0) llama_backend_free();
+            }
+            backendInited_ = false;
+            return false;
+        }
+        if (pref == "cpu") mparams.devices = selectedDevices.data();
+    }
+
     double t0 = nowMs();
     model_ = llama_model_load_from_file(config_.model_path.c_str(), mparams);
     modelLoadMs_ = nowMs() - t0;
@@ -145,6 +246,7 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
         lastError_ = "llama_model_load_from_file failed. "
                      "Check that the file is a valid GGUF model and that "
                      "there is enough RAM/VRAM available.";
+        if (!initErrorLog_.empty()) lastError_ += " llama.cpp reported: " + initErrorLog_;
         {
             std::lock_guard<std::mutex> lk(s_backendMutex);
             s_backendRefCount--;
@@ -152,6 +254,16 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
         }
         backendInited_ = false;
         return false;
+    }
+
+    if (explicitPref && selectedDevices.size() >= 2 && selectedDevices[0]) {
+        ggml_backend_dev_memory(selectedDevices[0], &devFree_, &devTotal_);
+        if (gpuLayersActual_ == 0) {
+            // Log line not captured; the device list was restricted to this GPU so
+            // every requested layer that exists in the model was offloaded to it.
+            gpuLayersActual_ = std::min(config_.effective_gpu_layers(),
+                                        static_cast<int>(llama_model_n_layer(model_)) + 1);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -191,18 +303,7 @@ bool LlamaCppEngine::initialize(const LlmConfig& config) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// infer()
-// ---------------------------------------------------------------------------
-LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* cancel_flag) {
-    LlmResult result;
-
-    if (!initialized_) {
-        result.error = "Engine not initialized. Call initialize() first.";
-        return result;
-    }
-
-    // -----------------------------------------------------------------------
+void LlamaCppEngine::fillMetadata(LlmResult& result) {
     // Fill result metadata from engine state
     // -----------------------------------------------------------------------
     result.gpu_layers_requested = config_.effective_gpu_layers();
@@ -211,38 +312,37 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
     result.vulkan_confirmed     = vulkan_used_this_run;
     result.device_name          = s_vulkanDevice_;
     result.backend              = vulkan_used_this_run ? "Vulkan" : "CPU";
+    if (!activeBackend_.empty()) {
+        // Explicit selection (Phase 26): report exactly what was selected, and only
+        // claim a GPU backend when layers were really offloaded to it.
+        const bool gpuBackend = (activeBackend_ == "CUDA" || activeBackend_ == "Vulkan");
+        if (gpuBackend && gpuLayersActual_ > 0) {
+            result.backend = activeBackend_;
+            result.vulkan_confirmed = (activeBackend_ == "Vulkan");
+            result.cuda_confirmed   = (activeBackend_ == "CUDA");
+            result.device_name      = activeDevice_;
+            result.device_total_bytes = devTotal_;
+            result.device_free_bytes  = devFree_;
+        } else {
+            result.backend = "CPU";
+            result.gpu_layers_actual = 0;
+            result.vulkan_confirmed = false;
+            result.cuda_confirmed   = false;
+            result.device_name.clear();
+        }
+    }
     result.model_load_ms        = modelLoadMs_;
     modelLoadMs_                = 0.0; // 0 for subsequent inferences on this already-loaded engine
 
-    // -----------------------------------------------------------------------
-    // Tokenize prompt
-    // -----------------------------------------------------------------------
-    const llama_vocab* vocab = llama_model_get_vocab(model_);
-    std::vector<llama_token> tokens(config_.n_ctx);
-    int n_prompt = llama_tokenize(vocab,
-                                  prompt.c_str(), static_cast<int32_t>(prompt.size()),
-                                  tokens.data(), static_cast<int32_t>(tokens.size()),
-                                  /* add_special = */ true,
-                                  /* parse_special = */ true);
-    if (n_prompt < 0) {
-        // Buffer was too small — resize to exact requirement and retry
-        tokens.resize(static_cast<size_t>(-n_prompt));
-        n_prompt = llama_tokenize(vocab,
-                                  prompt.c_str(), static_cast<int32_t>(prompt.size()),
-                                  tokens.data(), static_cast<int32_t>(tokens.size()),
-                                  true, true);
-    }
-    if (n_prompt <= 0) {
-        result.error = "Tokenization failed (returned " + std::to_string(n_prompt) + ")";
-        return result;
-    }
-    tokens.resize(static_cast<size_t>(n_prompt));
-    result.prompt_tokens = n_prompt;
+}
 
-    if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
-        result.error = "Cancelled before evaluation";
-        return result;
-    }
+void LlamaCppEngine::runDecode(std::vector<int32_t>& tokens, LlmResult& result,
+                               std::atomic<bool>* cancel_flag) {
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+
+    // Every inference starts from an empty KV cache so repeated calls on one
+    // engine are independent and reproducible (positions restart at 0).
+    llama_memory_clear(llama_get_memory(ctx_), true);
 
     // -----------------------------------------------------------------------
     // Prompt evaluation
@@ -258,11 +358,17 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
             if (ret != 0) {
                 result.error = "llama_decode failed during prompt evaluation (ret=" +
                                std::to_string(ret) + ", chunk starting at " + std::to_string(i) + ")";
-                return result;
+                return;
             }
         }
     }
     result.prompt_eval_ms = nowMs() - t_prompt_start;
+
+    if (config_.capture_first_logits) {
+        const float* lg = llama_get_logits_ith(ctx_, -1);
+        const int32_t nv = llama_vocab_n_tokens(vocab);
+        if (lg && nv > 0) result.first_token_logits.assign(lg, lg + nv);
+    }
 
     // -----------------------------------------------------------------------
     // Token generation
@@ -300,6 +406,7 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
         if (piece_len > 0) {
             output.append(piece, static_cast<size_t>(piece_len));
         }
+        result.output_token_ids.push_back(static_cast<int>(new_token));
 
         // Advance context: single-token decode
         llama_pos current_pos = static_cast<llama_pos>(tokens.size() + i);
@@ -332,6 +439,84 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
                                 ? (n_generated / (result.generation_ms / 1000.0))
                                 : 0.0;
     result.success = true;
+}
+
+// ---------------------------------------------------------------------------
+// infer()
+// ---------------------------------------------------------------------------
+LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* cancel_flag) {
+    LlmResult result;
+
+    if (!initialized_) {
+        result.error = "Engine not initialized. Call initialize() first.";
+        return result;
+    }
+
+    fillMetadata(result);
+
+    // -----------------------------------------------------------------------
+    // Tokenize prompt
+    // -----------------------------------------------------------------------
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    std::vector<llama_token> tokens(config_.n_ctx);
+    int n_prompt = llama_tokenize(vocab,
+                                  prompt.c_str(), static_cast<int32_t>(prompt.size()),
+                                  tokens.data(), static_cast<int32_t>(tokens.size()),
+                                  /* add_special = */ true,
+                                  /* parse_special = */ true);
+    if (n_prompt < 0) {
+        // Buffer was too small — resize to exact requirement and retry
+        tokens.resize(static_cast<size_t>(-n_prompt));
+        n_prompt = llama_tokenize(vocab,
+                                  prompt.c_str(), static_cast<int32_t>(prompt.size()),
+                                  tokens.data(), static_cast<int32_t>(tokens.size()),
+                                  true, true);
+    }
+    if (n_prompt <= 0) {
+        result.error = "Tokenization failed (returned " + std::to_string(n_prompt) + ")";
+        return result;
+    }
+    tokens.resize(static_cast<size_t>(n_prompt));
+    result.prompt_tokens = n_prompt;
+
+    if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
+        result.error = "Cancelled before evaluation";
+        return result;
+    }
+
+    runDecode(tokens, result, cancel_flag);
+    return result;
+}
+
+LlmResult LlamaCppEngine::inferTokens(const std::vector<int>& prompt_ids,
+                                     std::atomic<bool>* cancel_flag) {
+    LlmResult result;
+    if (!initialized_) {
+        result.error = "Engine not initialized. Call initialize() first.";
+        return result;
+    }
+    if (prompt_ids.empty()) {
+        result.error = "Empty prompt token list";
+        return result;
+    }
+    if (static_cast<int>(prompt_ids.size()) >= config_.n_ctx) {
+        result.error = "Prompt (" + std::to_string(prompt_ids.size()) + " tokens) does not fit the context window (" + std::to_string(config_.n_ctx) + ")";
+        return result;
+    }
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    std::vector<int32_t> tokens;
+    tokens.reserve(prompt_ids.size());
+    for (int id : prompt_ids) {
+        if (id < 0 || id >= n_vocab) {
+            result.error = "Prompt token id " + std::to_string(id) + " is outside the model vocabulary";
+            return result;
+        }
+        tokens.push_back(static_cast<int32_t>(id));
+    }
+    fillMetadata(result);
+    result.prompt_tokens = static_cast<int>(tokens.size());
+    runDecode(tokens, result, cancel_flag);
     return result;
 }
 

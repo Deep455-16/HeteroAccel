@@ -41,6 +41,20 @@ public:
     // Returns a populated LlmResult (check result.success).
     LlmResult infer(const std::string& prompt, std::atomic<bool>* cancel_flag = nullptr);
 
+    // Run inference from already-tokenized prompt ids (vocabulary ids of THIS
+    // model). Used by the orchestrated CUDA/llama.cpp path, whose requests carry
+    // token ids produced by the shared GGUF tokenizer. Ids are range-checked.
+    LlmResult inferTokens(const std::vector<int>& prompt_ids,
+                          std::atomic<bool>* cancel_flag = nullptr);
+
+    // Adjust generation settings between runs (does not reload the model).
+    void setGeneration(int max_new_tokens, float temperature, uint32_t seed) {
+        if (max_new_tokens > 0) config_.max_new_tokens = max_new_tokens;
+        config_.temperature = temperature;
+        config_.seed = seed;
+    }
+    int contextSize() const { return config_.n_ctx; }
+
     // Release model, context, sampler and free llama.cpp backend.
     // Safe to call multiple times.
     void shutdown();
@@ -51,8 +65,17 @@ public:
     bool        vulkanConfirmed()      const { return s_vulkanConfirmed_; }
     int         gpuLayersActual()      const { return gpuLayersActual_; }
     double      modelLoadMs()          const { return modelLoadMs_; }
+    /// Backend actually in use after initialize(): "CUDA" | "Vulkan" | "CPU".
+    std::string activeBackend()        const { return activeBackend_; }
+    std::string activeDeviceName()     const { return activeDevice_; }
+    size_t      deviceTotalBytes()     const { return devTotal_; }
+    size_t      deviceFreeBytes()      const { return devFree_; }
 
 private:
+    void fillMetadata(LlmResult& result);
+    void runDecode(std::vector<int32_t>& tokens, LlmResult& result,
+                   std::atomic<bool>* cancel_flag);
+
     // Static log callback installed via llama_log_set().
     // llama.cpp uses a single global callback, so we track the
     // "engine currently being initialized" via a static pointer.
@@ -66,6 +89,13 @@ private:
     bool        backendInited_   = false;
 
     int         gpuLayersActual_ = 0;
+
+    // Per-engine selection state (Phase 26)
+    std::string activeBackend_;
+    std::string activeDevice_;
+    size_t      devTotal_ = 0;
+    size_t      devFree_  = 0;
+    std::string initErrorLog_;   // llama.cpp ERROR-level log lines captured during init
 
     double      modelLoadMs_     = 0.0;
     std::string lastError_;

@@ -43,24 +43,30 @@ void register_default_backends(EngineOrchestrator& orch, const HardwareDetector&
         orch.register_backend(vk);
     }
 
-    // CUDA backend placeholder (compiles on all platforms, activates only when CUDA present)
-#ifdef HETEROACCEL_CUDA_ENABLED
-    if (hw.has_cuda()) {
+    // CUDA backend: real inference through llama.cpp's GGML_CUDA backend
+    // (LlamaCppEngineAdapter). Registered only in binaries built with
+    // HETEROACCEL_ENABLE_CUDA; whether it is *usable* is decided per run by
+    // BackendCapabilities::is_available() against the detected CUDA devices.
+#if defined(HETEROACCEL_CUDA_ENABLED) && HETEROACCEL_CUDA_ENABLED
+    {
         BackendCapabilities cuda_b;
         cuda_b.backend_id = "cuda";
-        cuda_b.supported_quant_types = {0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17};
-        cuda_b.supported_arch = {"llama", "qwen2", "mistral", "phi", "gemma"};
+        // llama.cpp/ggml-cuda defines architecture and quantization coverage, not
+        // this list; empty vectors are wildcards. An unsupported model fails to load
+        // and the orchestrator falls back to CPU with the reported reason.
         cuda_b.requires_cuda = true;
         cuda_b.requires_vulkan = false;
-        cuda_b.min_vram_bytes = 1024 * 1024 * 1024;
+        cuda_b.min_vram_bytes = 512ULL * 1024 * 1024;
         cuda_b.min_ram_bytes = 512 * 1024 * 1024;
-        cuda_b.relative_throughput = 5.0f;
+        // PRIOR (not a measurement): ranks CUDA above Vulkan/CPU on a device that
+        // passed detection. Replaced by observed tok/s from the PerfProfile once
+        // real runs have been recorded (see EngineOrchestrator::record_performance).
+        cuda_b.relative_throughput = 12.0f;
         cuda_b.init_cost_ms = 3000.0f;
         cuda_b.priority = 30;
         orch.register_backend(cuda_b);
     }
 #endif
 }
-
 } // namespace orchestration
 } // namespace agr

@@ -41,7 +41,9 @@ struct BackendCapabilities {
             return false;
         }
         if (min_vram_bytes > 0) {
-            const auto* gpu = hw.best_gpu();
+            // CUDA backends are judged on the best CUDA device, not on whichever GPU has most VRAM.
+            const auto* gpu = requires_cuda ? hw.best_cuda_gpu() : nullptr;
+            if (!gpu) gpu = hw.best_gpu();
             if (!gpu || gpu->vram_bytes < min_vram_bytes) {
                 return false;
             }
