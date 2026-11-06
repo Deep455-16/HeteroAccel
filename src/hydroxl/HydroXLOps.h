@@ -1,21 +1,19 @@
 // src/hydroxl/HydroXLOps.h
-// Phase 17: Native transformer operators for HydroXL.
+// Phase 17 / Phase 27: Native transformer operators for HydroXL.
 //
 // All operators work on FLOAT32 data (post-dequantization).
-// No SIMD extensions: plain scalar C++ for portability and correctness.
 //
-// Supported architecture: Qwen2 (qwen2)
+// Supported architectures: Llama/Llama 3, Mistral, Qwen2/Qwen2.5, Phi-3, Gemma, Gemma 2
 //   - RMSNorm with epsilon
 //   - GEMM: mat-vec product (weight [out, in] × input [in]) → output [out]
 //   - Embedding lookup
-//   - RoPE (rotary positional encoding, Qwen2 variant with freq_base=1e6)
-//   - SiLU activation (for SwiGLU / SiLU-FFN)
-//   - SwiGLU FFN step: silu(gate) * up
-//   - Softmax (causal masked)
+//   - RoPE (both NEOX split-half and NORM interleaved-pair variants, partial rope_dim)
+//   - SiLU / SwiGLU FFN: silu(gate) * up
+//   - GELU / GeGLU FFN: gelu(gate) * up (Gemma / Gemma 2)
+//   - Tanh logit softcapping (Gemma 2 attention & final logits)
+//   - Softmax (causal masked, optional sliding window)
 //   - Causal attention (multi-head, grouped-query)
 //   - Residual add (in-place)
-//
-// All functions validate inputs and return false on error.
 
 #pragma once
 
@@ -40,19 +38,32 @@ bool embed_lookup(const float* table, uint32_t token_id,
                   uint32_t vocab_size, uint32_t n_embd,
                   float* dst) noexcept;
 
-/// In-place RoPE for a single token at position pos.
-/// q/k: [n_heads, head_dim] and [n_kv_heads, head_dim] respectively.
-/// head_dim must be even.
+/// In-place RoPE for a single token at position pos (NEOX split-half default).
 bool rope_apply(float* q, uint32_t n_heads,
                 float* k, uint32_t n_kv_heads,
                 uint32_t head_dim, uint32_t pos,
                 float freq_base, float freq_scale) noexcept;
+
+/// Extended in-place RoPE supporting both NEOX (split-half) and NORM (interleaved)
+/// styles as well as partial rotary dimensions (rope_dim <= head_dim).
+bool rope_apply_ext(float* q, uint32_t n_heads,
+                    float* k, uint32_t n_kv_heads,
+                    uint32_t head_dim, uint32_t rope_dim,
+                    uint32_t pos,
+                    float freq_base, float freq_scale,
+                    bool neox_style) noexcept;
 
 /// SiLU: out[i] = x[i] * sigmoid(x[i]) = x[i] / (1 + exp(-x[i]))
 void silu_inplace(float* x, uint32_t n) noexcept;
 
 /// SwiGLU combine: out[i] = silu(gate[i]) * up[i]
 void swiglu(const float* gate, const float* up, float* out, uint32_t n) noexcept;
+
+/// GeGLU combine (Gemma / Gemma 2): out[i] = gelu(gate[i]) * up[i]
+void geglu(const float* gate, const float* up, float* out, uint32_t n) noexcept;
+
+/// In-place tanh logit softcapping (Gemma 2): x[i] = tanh(x[i] / cap) * cap
+void softcap_inplace(float* x, uint32_t n, float cap) noexcept;
 
 /// Residual add: a[i] += b[i]
 void residual_add(float* a, const float* b, uint32_t n) noexcept;
@@ -61,16 +72,6 @@ void residual_add(float* a, const float* b, uint32_t n) noexcept;
 void softmax_inplace(float* x, uint32_t n) noexcept;
 
 /// Causal self-attention for a single query token at position pos.
-///
-/// q          : [n_heads, head_dim] — query for current token
-/// k_cache    : [n_kv_heads, max_seq, head_dim] — key cache (all prior tokens incl. current)
-/// v_cache    : [n_kv_heads, max_seq, head_dim] — value cache
-/// out        : [n_heads, head_dim] — attention output
-/// seq_len    : number of valid tokens in cache (including current)
-/// n_heads    : query heads
-/// n_kv_heads : key/value heads (≤ n_heads, must divide evenly)
-/// head_dim   : dimension per head
-/// scale      : attention scale (typically 1/sqrt(head_dim))
 bool causal_attention(const float* q,
                       const float* k_cache,
                       const float* v_cache,
@@ -81,7 +82,9 @@ bool causal_attention(const float* q,
                       uint32_t head_dim,
                       uint32_t max_seq_len,
                       float scale,
-                      float* scratch_scores = nullptr) noexcept;
+                      float* scratch_scores = nullptr,
+                      float attn_logit_softcap = 0.0f,
+                      uint32_t sliding_window = 0) noexcept;
 
 } // namespace hydroxl
 } // namespace agr

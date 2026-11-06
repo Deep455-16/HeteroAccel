@@ -365,24 +365,32 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
     }
 
     const auto& hp = model_->hparams();
-    uint32_t n_embd    = hp.n_embd;
-    uint32_t n_heads   = hp.n_heads;
-    uint32_t n_kv      = hp.n_kv_heads;
-    uint32_t head_dim  = hp.n_head_dim;
-    uint32_t n_ff      = hp.n_ff;
-    uint32_t vocab     = hp.vocab_size;
-    float    rope_base = hp.rope_freq_base;
+    uint32_t n_embd     = hp.n_embd;
+    uint32_t n_heads    = hp.n_heads;
+    uint32_t n_kv       = hp.n_kv_heads;
+    uint32_t head_dim   = hp.n_head_dim;
+    uint32_t rope_dim   = (hp.n_rope_dim > 0) ? hp.n_rope_dim : head_dim;
+    uint32_t n_ff       = hp.n_ff;
+    uint32_t vocab      = hp.vocab_size;
+    float    rope_base  = hp.rope_freq_base;
+    float    rope_scale = hp.rope_freq_scale;
+    bool     neox_rope  = (hp.rope_type == hydroxl::RoPEType::NEOX);
     float    attn_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
     if (logits.size() != vocab) {
         logits.resize(vocab);
     }
 
-    // Step 1: Embedding lookup on CPU
+    // Step 1: Embedding lookup on CPU (+ Gemma sqrt(n_embd) scaling)
     if (!hydroxl::embed_lookup(model_->tokenEmbedding().data(), token_id,
                                vocab, n_embd, hidden_.data())) {
         err = "Invalid token_id=" + std::to_string(token_id);
         return false;
+    }
+    if (hp.embedding_scale != 1.0f) {
+        for (uint32_t i = 0; i < n_embd; ++i) {
+            hidden_[i] *= hp.embedding_scale;
+        }
     }
 
     // Step 2: Transformer layers
@@ -410,7 +418,7 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
             return false;
         }
 
-        // Add biases if present (Qwen2 has QKV biases)
+        // Add biases if present (Qwen2 / Phi-3)
         if (!w.attn_q_bias.empty()) {
             for (uint32_t i = 0; i < n_heads * head_dim; ++i)
                 q_buf_[i] += w.attn_q_bias[i];
@@ -424,10 +432,11 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
                 v_buf_[i] += w.attn_v_bias[i];
         }
 
-        // 2c. RoPE on CPU
-        hydroxl::rope_apply(q_buf_.data(), n_heads,
-                            k_buf_.data(), n_kv,
-                            head_dim, pos, rope_base, 1.0f);
+        // 2c. RoPE on CPU (NORM or NEOX, partial rope_dim)
+        hydroxl::rope_apply_ext(q_buf_.data(), n_heads,
+                                k_buf_.data(), n_kv,
+                                head_dim, rope_dim, pos,
+                                rope_base, rope_scale, neox_rope);
 
         // 2d. Write K, V to cache
         if (!kv_cache_->writeKV(l, pos, k_buf_.data(), v_buf_.data())) {
@@ -445,15 +454,20 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
                                       n_heads, n_kv, head_dim,
                                       kv_cache_->maxSeqLen(),
                                       attn_scale,
-                                      attn_scores_.data())) {
+                                      attn_scores_.data(),
+                                      hp.attn_logit_softcap,
+                                      hp.sliding_window)) {
             err = "causal_attention failed at layer " + std::to_string(l);
             return false;
         }
 
-        // 2f. Output projection on GPU
+        // 2f. Output projection on GPU (+ optional Gemma 2 post-attention norm)
         if (!vk_ops_.matvecHost(pfx + "attn_output", attn_out_.data(), proj_out_.data(), n_embd, n_heads * head_dim)) {
             err = "GPU matvec attn_output failed at layer " + std::to_string(l) + ": " + vk_ops_.lastError();
             return false;
+        }
+        if (!w.post_attn_norm.empty()) {
+            hydroxl::rms_norm(proj_out_.data(), w.post_attn_norm.data(), proj_out_.data(), n_embd, hp.rms_norm_eps);
         }
 
         // 2g. Residual add on GPU
@@ -468,7 +482,7 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
             return false;
         }
 
-        // 2i. SwiGLU FFN on GPU
+        // 2i. SwiGLU / GeGLU FFN on GPU (+ optional Gemma 2 post-FFN norm)
         if (!vk_ops_.matvecHost(pfx + "ffn_gate", normed_.data(), gate_buf_.data(), n_ff, n_embd)) {
             err = "GPU matvec ffn_gate failed at layer " + std::to_string(l) + ": " + vk_ops_.lastError();
             return false;
@@ -477,13 +491,20 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
             err = "GPU matvec ffn_up failed at layer " + std::to_string(l) + ": " + vk_ops_.lastError();
             return false;
         }
-        if (!vk_ops_.elemwise(gate_buf_.data(), up_buf_.data(), ffn_buf_.data(), n_ff, 2)) {
-            err = "GPU swiglu failed at layer " + std::to_string(l) + ": " + vk_ops_.lastError();
-            return false;
+        if (hp.ffn_activation == hydroxl::FFNActivation::GEGLU) {
+            hydroxl::geglu(gate_buf_.data(), up_buf_.data(), ffn_buf_.data(), n_ff);
+        } else {
+            if (!vk_ops_.elemwise(gate_buf_.data(), up_buf_.data(), ffn_buf_.data(), n_ff, 2)) {
+                err = "GPU swiglu failed at layer " + std::to_string(l) + ": " + vk_ops_.lastError();
+                return false;
+            }
         }
         if (!vk_ops_.matvecHost(pfx + "ffn_down", ffn_buf_.data(), ffn_out_.data(), n_embd, n_ff)) {
             err = "GPU matvec ffn_down failed at layer " + std::to_string(l) + ": " + vk_ops_.lastError();
             return false;
+        }
+        if (!w.post_ffn_norm.empty()) {
+            hydroxl::rms_norm(ffn_out_.data(), w.post_ffn_norm.data(), ffn_out_.data(), n_embd, hp.rms_norm_eps);
         }
 
         // 2j. Residual add on GPU
@@ -499,10 +520,13 @@ bool HydroXLVulkanEngineAdapter::forward_token(uint32_t token_id, uint32_t pos,
         return false;
     }
 
-    // Step 4: LM head on GPU
+    // Step 4: LM head on GPU (+ optional Gemma 2 final logit softcapping)
     if (!vk_ops_.matvecHost("output.weight", normed_.data(), logits.data(), vocab, n_embd)) {
         err = "GPU LM head matvec failed: " + vk_ops_.lastError();
         return false;
+    }
+    if (hp.final_logit_softcap > 0.0f) {
+        hydroxl::softcap_inplace(logits.data(), vocab, hp.final_logit_softcap);
     }
 
     return true;

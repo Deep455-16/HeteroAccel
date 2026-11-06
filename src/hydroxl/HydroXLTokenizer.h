@@ -1,28 +1,10 @@
 // src/hydroxl/HydroXLTokenizer.h
-// Phase 19: byte-level BPE tokenizer for HydroXL (GPT-2 / Qwen2 style).
+// Phase 19 / Phase 27: Universal BPE tokenizer for HydroXL.
 //
-// Qwen2.5 stores its tokenizer in GGUF as:
-//   tokenizer.ggml.model        = "gpt2"
-//   tokenizer.ggml.tokens       = [array of strings]  byte-level vocabulary
-//   tokenizer.ggml.token_type   = [array of int32]    (1=normal 3=control 4=user)
-//   tokenizer.ggml.scores       = [array of float32]
-//   tokenizer.ggml.merges       = [array of strings]  ("a b" ordered merge ranks)
-//   tokenizer.ggml.bos_token_id / eos_token_id / unknown_token_id
-//
-// Encoding follows the GPT-2 byte-level BPE algorithm:
-//   1. Pre-tokenize text with the Qwen2 split rules (contractions,
-//      letter runs with optional leading char, digit groups of up to three,
-//      punctuation runs with optional leading space, newline runs,
-//      whitespace splitting).
-//   2. Map every byte of each piece through the GPT-2 byte→unicode table.
-//   3. Repeatedly merge the adjacent pair with the lowest merge rank.
-//   4. Look the resulting symbols up in the vocabulary.
-// Decoding concatenates token strings and reverses the unicode mapping.
-//
-// Known approximation (documented limitation): the pre-tokenizer classifies
-// every non-ASCII codepoint >= U+0080 as a letter. This matches the reference
-// behaviour for ASCII/Latin and CJK text but may differ for non-ASCII
-// punctuation or emoji adjacent to letters.
+// Supports both GGUF tokenizer families used across supported architectures:
+//   1. "gpt2"  — Byte-level BPE with explicit merge ranks (Qwen2/Qwen2.5, Llama 3, Mistral v3)
+//   2. "llama" — SentencePiece BPE with token scores, '▁' (U+2581) whitespace
+//                normalization, and <0xXX> byte fallback (Llama 1/2, Mistral, Phi-3, Gemma 1/2)
 //
 // Does NOT depend on the llama.cpp tokenizer at any point.
 
@@ -39,6 +21,11 @@
 namespace agr {
 namespace hydroxl {
 
+enum class TokenizerType : uint32_t {
+    GPT2  = 0, ///< Byte-level BPE (tokenizer.ggml.model = "gpt2")
+    LLAMA = 1, ///< SentencePiece BPE (tokenizer.ggml.model = "llama")
+};
+
 class HydroXLTokenizer {
 public:
     HydroXLTokenizer() = default;
@@ -50,18 +37,22 @@ public:
 
     /// Build the tokenizer from a GGUF file.
     /// Returns false if required metadata is missing or the tokenizer
-    /// family is unsupported (only "gpt2" byte-level BPE is supported).
+    /// family is unsupported.
     bool loadFromGGUF(GGUFLoader& gguf);
 
     bool isLoaded() const { return loaded_; }
 
+    TokenizerType tokenizerType() const { return tok_type_; }
     uint32_t vocabSize() const { return static_cast<uint32_t>(vocab_.size()); }
     TokenID  bosToken()  const { return bos_id_; }
     TokenID  eosToken()  const { return eos_id_; }
     TokenID  unkToken()  const { return unk_id_; }
 
-    /// Whether this tokenizer prepends BOS on encode (Qwen2: false).
+    /// Whether this tokenizer prepends BOS on encode.
     bool addsBos() const { return add_bos_; }
+
+    /// Whether this SentencePiece tokenizer prepends a leading space.
+    bool addsSpacePrefix() const { return add_space_prefix_; }
 
     /// Encode a UTF-8 string to a sequence of token IDs.
     /// Prepends BOS token if add_bos=true.
@@ -79,25 +70,37 @@ private:
     // Build the GPT-2 byte<->unicode mapping tables.
     void buildByteTables();
 
-    // Split text into pre-tokenization pieces (Qwen2 rules, see header).
+    // Split text into pre-tokenization pieces (GPT-2 / Qwen2 rules).
     std::vector<std::string> preTokenize(const std::string& text) const;
 
-    // BPE encode one pre-token piece (already in raw byte form).
+    // GPT-2 byte-level BPE on one pre-token piece.
     std::vector<TokenID> bpe(const std::string& piece) const;
+
+    // SentencePiece BPE ("llama" model) on full text.
+    std::vector<TokenID> encodeSentencePiece(const std::string& text) const;
+
+    // Decode a single SentencePiece token string (<0xXX> or ▁ replacement).
+    std::string decodeSentencePieceToken(const std::string& raw_tok) const;
 
     // Look up a string in the vocabulary -> token ID (or TOKEN_INVALID)
     TokenID tokenToId(const std::string& s) const;
 
     bool loaded_ = false;
+    TokenizerType tok_type_ = TokenizerType::GPT2;
     bool add_bos_ = false;
+    bool add_space_prefix_ = true;
 
-    std::vector<std::string> vocab_;            ///< vocab_[id] -> token text (byte-level form)
+    std::vector<std::string> vocab_;            ///< vocab_[id] -> token text
     std::unordered_map<std::string, TokenID> str_to_id_; ///< Reverse lookup
 
-    // merge_rank_["a b"] = rank (lower = merged earlier)
+    // GPT-2: merge_rank_["a b"] = rank (lower = merged earlier)
     std::unordered_map<std::string, int> merge_rank_;
 
-    std::vector<int> token_type_;   ///< 1=normal 2=unknown 3=control 4=user 5=unused
+    // SentencePiece ("llama"): per-token merge priority score (higher = merged earlier)
+    std::vector<float> scores_;
+    std::array<TokenID, 256> byte_fallback_ids_{};
+
+    std::vector<int> token_type_;   ///< 1=normal 2=unknown 3=control 4=user 5=unused 6=byte
 
     // GPT-2 byte-level mapping: byte -> unicode char (as UTF-8 string)
     std::array<std::string, 256> byte_to_unicode_;

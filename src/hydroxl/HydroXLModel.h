@@ -1,26 +1,28 @@
 // src/hydroxl/HydroXLModel.h
-// Phase 17: Loaded model weights for HydroXL.
+// Phase 17 / Phase 27: Loaded model weights for HydroXL.
 //
-// HydroXLModel holds the dequantized FLOAT32 weight tensors for a Qwen2
-// model loaded from a GGUF file. It owns the weight buffers.
+// HydroXLModel holds the dequantized FLOAT32 weight tensors for a transformer
+// model loaded from a GGUF file (Llama/Llama 3, Mistral, Qwen2/Qwen2.5, Phi-3,
+// Gemma, Gemma 2). It owns the weight buffers.
 //
 // All tensors are stored as flat std::vector<float> after dequantization.
-// Naming follows the GGUF tensor names used in Qwen2 models:
-//   token_embd.weight            : [vocab_size, n_embd]
-//   output_norm.weight           : [n_embd]
-//   output.weight                : [vocab_size, n_embd]  (LM head)
-//   blk.{l}.attn_norm.weight     : [n_embd]
-//   blk.{l}.ffn_norm.weight      : [n_embd]
-//   blk.{l}.attn_q.weight        : [n_heads*head_dim, n_embd]
-//   blk.{l}.attn_k.weight        : [n_kv_heads*head_dim, n_embd]
-//   blk.{l}.attn_v.weight        : [n_kv_heads*head_dim, n_embd]
-//   blk.{l}.attn_output.weight   : [n_embd, n_heads*head_dim]
-//   blk.{l}.ffn_gate.weight      : [n_ff, n_embd]
-//   blk.{l}.ffn_up.weight        : [n_ff, n_embd]
-//   blk.{l}.ffn_down.weight      : [n_embd, n_ff]
-//   blk.{l}.attn_q.bias          : [n_heads*head_dim]       (Qwen2 has bias)
-//   blk.{l}.attn_k.bias          : [n_kv_heads*head_dim]
-//   blk.{l}.attn_v.bias          : [n_kv_heads*head_dim]
+// Standard GGUF tensor names:
+//   token_embd.weight                 : [vocab_size, n_embd]
+//   output_norm.weight                : [n_embd]
+//   output.weight                     : [vocab_size, n_embd]  (LM head, or tied to token_embd)
+//   blk.{l}.attn_norm.weight          : [n_embd]
+//   blk.{l}.ffn_norm.weight           : [n_embd]
+//   blk.{l}.post_attention_norm.weight: [n_embd]              (Gemma 2)
+//   blk.{l}.post_ffw_norm.weight      : [n_embd]              (Gemma 2)
+//   blk.{l}.attn_q.weight             : [n_heads*head_dim, n_embd]
+//   blk.{l}.attn_k.weight             : [n_kv_heads*head_dim, n_embd]
+//   blk.{l}.attn_v.weight             : [n_kv_heads*head_dim, n_embd]
+//   blk.{l}.attn_qkv.weight           : [(n_heads + 2*n_kv_heads)*head_dim, n_embd] (Phi-3 fused, split on load)
+//   blk.{l}.attn_output.weight        : [n_embd, n_heads*head_dim]
+//   blk.{l}.ffn_gate.weight           : [n_ff, n_embd]
+//   blk.{l}.ffn_up.weight             : [n_ff, n_embd] (or [2*n_ff, n_embd] fused in Phi-3, split on load)
+//   blk.{l}.ffn_down.weight           : [n_embd, n_ff]
+//   blk.{l}.attn_q/k/v.bias           : optional QKV biases (Qwen2, Phi-3)
 
 #pragma once
 
@@ -35,30 +37,33 @@ namespace agr {
 namespace hydroxl {
 
 struct Qwen2LayerWeights {
-    std::vector<float> attn_norm;     ///< [n_embd]
-    std::vector<float> ffn_norm;      ///< [n_embd]
+    std::vector<float> attn_norm;       ///< [n_embd]
+    std::vector<float> ffn_norm;        ///< [n_embd]
+    std::vector<float> post_attn_norm;  ///< [n_embd] (Gemma 2 post-attention RMSNorm, optional)
+    std::vector<float> post_ffn_norm;   ///< [n_embd] (Gemma 2 post-FFN RMSNorm, optional)
 
-    std::vector<float> attn_q;        ///< [n_heads*head_dim, n_embd]  row-major
-    std::vector<float> attn_k;        ///< [n_kv_heads*head_dim, n_embd]
-    std::vector<float> attn_v;        ///< [n_kv_heads*head_dim, n_embd]
-    std::vector<float> attn_out;      ///< [n_embd, n_heads*head_dim]
+    std::vector<float> attn_q;          ///< [n_heads*head_dim, n_embd]  row-major
+    std::vector<float> attn_k;          ///< [n_kv_heads*head_dim, n_embd]
+    std::vector<float> attn_v;          ///< [n_kv_heads*head_dim, n_embd]
+    std::vector<float> attn_out;        ///< [n_embd, n_heads*head_dim]
 
-    std::vector<float> attn_q_bias;   ///< [n_heads*head_dim]   (may be empty)
-    std::vector<float> attn_k_bias;   ///< [n_kv_heads*head_dim]
-    std::vector<float> attn_v_bias;   ///< [n_kv_heads*head_dim]
+    std::vector<float> attn_q_bias;     ///< [n_heads*head_dim]   (may be empty)
+    std::vector<float> attn_k_bias;     ///< [n_kv_heads*head_dim]
+    std::vector<float> attn_v_bias;     ///< [n_kv_heads*head_dim]
 
-    std::vector<float> ffn_gate;      ///< [n_ff, n_embd]
-    std::vector<float> ffn_up;        ///< [n_ff, n_embd]
-    std::vector<float> ffn_down;      ///< [n_embd, n_ff]
+    std::vector<float> ffn_gate;        ///< [n_ff, n_embd]
+    std::vector<float> ffn_up;          ///< [n_ff, n_embd]
+    std::vector<float> ffn_down;        ///< [n_embd, n_ff]
 
     bool isComplete() const {
-        // Minimum required: norms, QKV, output, FFN
         return !attn_norm.empty() && !ffn_norm.empty()
             && !attn_q.empty() && !attn_k.empty() && !attn_v.empty()
             && !attn_out.empty()
             && !ffn_gate.empty() && !ffn_up.empty() && !ffn_down.empty();
     }
 };
+
+using TransformerLayerWeights = Qwen2LayerWeights;
 
 class HydroXLModel {
 public:
@@ -103,7 +108,7 @@ private:
     Qwen2HParams hparams_;
     std::vector<float> tok_embd_;     ///< [vocab_size * n_embd]
     std::vector<float> output_norm_;  ///< [n_embd]
-    std::vector<float> lm_head_;     ///< [vocab_size * n_embd]
+    std::vector<float> lm_head_;      ///< [vocab_size * n_embd]
 
     std::vector<Qwen2LayerWeights> layers_;
 

@@ -330,3 +330,24 @@ set_tests_properties(
     PROPERTIES
         TIMEOUT 180
 )
+
+
+# Phase 27 - HydroXL Universal Model & Quantization Support
+agr_add_test(test_p27_quant_decoders test_p27_quant_decoders.cpp)
+target_link_libraries(test_p27_quant_decoders PRIVATE ggml)
+target_include_directories(test_p27_quant_decoders PRIVATE
+    ${llama_cpp_SOURCE_DIR}/ggml/src
+    ${llama_cpp_SOURCE_DIR}/ggml/include
+)
+
+agr_add_test(test_p27_architectures test_p27_architectures.cpp)
+target_link_libraries(test_p27_architectures PRIVATE llama ggml)
+target_include_directories(test_p27_architectures PRIVATE
+    ${llama_cpp_SOURCE_DIR}/include
+    ${llama_cpp_SOURCE_DIR}/ggml/include
+)
+set_tests_properties(
+    test_p27_architectures
+    PROPERTIES
+        TIMEOUT 180
+)

@@ -1,5 +1,5 @@
 // src/hydroxl/HydroXLOps.cpp
-// Phase 17: Scalar FLOAT32 transformer operator implementations.
+// Phase 17 / Phase 27: FLOAT32 transformer operator implementations.
 
 #include "hydroxl/HydroXLOps.h"
 
@@ -20,7 +20,6 @@ bool rms_norm(const float* x, const float* weight, float* out,
               uint32_t n, float eps) noexcept {
     if (!x || !weight || !out || n == 0) return false;
 
-    // Compute mean of squares
     double sum_sq = 0.0;
     for (uint32_t i = 0; i < n; ++i) {
         sum_sq += static_cast<double>(x[i]) * static_cast<double>(x[i]);
@@ -78,54 +77,57 @@ bool embed_lookup(const float* table, uint32_t token_id,
 }
 
 // ---------------------------------------------------------------------------
-// RoPE (Rotary Positional Encoding)
-// Applies to Q and K tensors in-place.
-// Each head pair (q[2i], q[2i+1]) is rotated by angle θ_i * pos
-// where θ_i = 1 / (freq_base ^ (2i / head_dim)).
-// Qwen2 uses freq_base = 1,000,000.
+// RoPE (Rotary Positional Encoding) — supports NEOX (split-half) and NORM
+// (interleaved consecutive pairs) styles and partial rope_dim <= head_dim.
 // ---------------------------------------------------------------------------
+bool rope_apply_ext(float* q, uint32_t n_heads,
+                    float* k, uint32_t n_kv_heads,
+                    uint32_t head_dim, uint32_t rope_dim,
+                    uint32_t pos,
+                    float freq_base, float freq_scale,
+                    bool neox_style) noexcept {
+    if (!q || !k || head_dim == 0 || head_dim % 2 != 0) return false;
+    if (rope_dim == 0 || rope_dim > head_dim || rope_dim % 2 != 0) return false;
+    if (n_heads == 0 || n_kv_heads == 0) return false;
+
+    uint32_t half = rope_dim / 2;
+
+    auto rotate_heads = [&](float* buf, uint32_t count) {
+        for (uint32_t h = 0; h < count; ++h) {
+            float* hd = buf + static_cast<size_t>(h) * head_dim;
+            for (uint32_t i = 0; i < half; ++i) {
+                float theta = freq_scale / std::pow(freq_base, static_cast<float>(2 * i) / static_cast<float>(rope_dim));
+                float angle = static_cast<float>(pos) * theta;
+                float cos_a = std::cos(angle);
+                float sin_a = std::sin(angle);
+
+                if (neox_style) {
+                    float v0 = hd[i];
+                    float v1 = hd[i + half];
+                    hd[i]        = v0 * cos_a - v1 * sin_a;
+                    hd[i + half] = v0 * sin_a + v1 * cos_a;
+                } else {
+                    float v0 = hd[2 * i];
+                    float v1 = hd[2 * i + 1];
+                    hd[2 * i]     = v0 * cos_a - v1 * sin_a;
+                    hd[2 * i + 1] = v0 * sin_a + v1 * cos_a;
+                }
+            }
+        }
+    };
+
+    rotate_heads(q, n_heads);
+    rotate_heads(k, n_kv_heads);
+    return true;
+}
+
 bool rope_apply(float* q, uint32_t n_heads,
                 float* k, uint32_t n_kv_heads,
                 uint32_t head_dim, uint32_t pos,
                 float freq_base, float freq_scale) noexcept {
-    if (!q || !k || head_dim == 0 || head_dim % 2 != 0) return false;
-    if (n_heads == 0 || n_kv_heads == 0) return false;
-
-    uint32_t half = head_dim / 2;
-
-    // Apply to query heads
-    for (uint32_t h = 0; h < n_heads; ++h) {
-        float* qh = q + static_cast<size_t>(h) * head_dim;
-        for (uint32_t i = 0; i < half; ++i) {
-            // θ_i = freq_scale / (freq_base ^ (2i / head_dim))
-            float theta = freq_scale / std::pow(freq_base, static_cast<float>(2 * i) / static_cast<float>(head_dim));
-            float angle = static_cast<float>(pos) * theta;
-            float cos_a = std::cos(angle);
-            float sin_a = std::sin(angle);
-
-            float q0 = qh[i];
-            float q1 = qh[i + half];
-            qh[i]        = q0 * cos_a - q1 * sin_a;
-            qh[i + half] = q0 * sin_a + q1 * cos_a;
-        }
-    }
-
-    // Apply to key heads
-    for (uint32_t h = 0; h < n_kv_heads; ++h) {
-        float* kh = k + static_cast<size_t>(h) * head_dim;
-        for (uint32_t i = 0; i < half; ++i) {
-            float theta = freq_scale / std::pow(freq_base, static_cast<float>(2 * i) / static_cast<float>(head_dim));
-            float angle = static_cast<float>(pos) * theta;
-            float cos_a = std::cos(angle);
-            float sin_a = std::sin(angle);
-
-            float k0 = kh[i];
-            float k1 = kh[i + half];
-            kh[i]        = k0 * cos_a - k1 * sin_a;
-            kh[i + half] = k0 * sin_a + k1 * cos_a;
-        }
-    }
-    return true;
+    return rope_apply_ext(q, n_heads, k, n_kv_heads,
+                          head_dim, head_dim, pos,
+                          freq_base, freq_scale, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +148,30 @@ void swiglu(const float* gate, const float* up, float* out, uint32_t n) noexcept
         float g = gate[i];
         float activated = g / (1.0f + std::exp(-g));
         out[i] = activated * up[i];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GeGLU (Gemma / Gemma 2): out[i] = gelu(gate[i]) * up[i]
+// Matches ggml_fp32_to_fp32 GELU reference in ggml/src/ggml-cpu/vec.h.
+// ---------------------------------------------------------------------------
+void geglu(const float* gate, const float* up, float* out, uint32_t n) noexcept {
+    static constexpr float SQRT_2_OVER_PI = 0.79788456080286535588f;
+    static constexpr float GELU_COEF_A    = 0.044715f;
+    for (uint32_t i = 0; i < n; ++i) {
+        float x = gate[i];
+        float gelu_x = 0.5f * x * (1.0f + std::tanh(SQRT_2_OVER_PI * x * (1.0f + GELU_COEF_A * x * x)));
+        out[i] = gelu_x * up[i];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tanh logit softcapping (Gemma 2)
+// ---------------------------------------------------------------------------
+void softcap_inplace(float* x, uint32_t n, float cap) noexcept {
+    if (!x || cap <= 0.0f) return;
+    for (uint32_t i = 0; i < n; ++i) {
+        x[i] = std::tanh(x[i] / cap) * cap;
     }
 }
 
@@ -175,13 +201,7 @@ void softmax_inplace(float* x, uint32_t n) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Causal attention
-// Grouped Query Attention (GQA): n_kv_heads divides n_heads evenly.
-// Each KV head is shared by (n_heads / n_kv_heads) query heads.
-//
-// k_cache layout: [n_kv_heads * max_seq_len * head_dim]
-//   stored as: head → position → dim
-// v_cache layout: same
+// Causal attention (Grouped Query Attention, optional softcapping & window)
 // ---------------------------------------------------------------------------
 bool causal_attention(const float* q,
                       const float* k_cache,
@@ -193,13 +213,19 @@ bool causal_attention(const float* q,
                       uint32_t head_dim,
                       uint32_t max_seq_len,
                       float scale,
-                      float* scratch_scores) noexcept {
+                      float* scratch_scores,
+                      float attn_logit_softcap,
+                      uint32_t sliding_window) noexcept {
     if (!q || !k_cache || !v_cache || !out) return false;
     if (seq_len == 0 || n_heads == 0 || n_kv_heads == 0 || head_dim == 0) return false;
     if (n_heads % n_kv_heads != 0) return false;
     if (seq_len > max_seq_len) return false;
 
     uint32_t heads_per_kv = n_heads / n_kv_heads;
+    uint32_t start_t = (sliding_window > 0 && seq_len > sliding_window)
+                           ? (seq_len - sliding_window)
+                           : 0u;
+    uint32_t active_len = seq_len - start_t;
 
     std::vector<float> local_scores;
     float* scores_ptr = scratch_scores;
@@ -212,11 +238,9 @@ bool causal_attention(const float* q,
         const float* qh = q + static_cast<size_t>(h) * head_dim;
         float* outh     = out + static_cast<size_t>(h) * head_dim;
 
-        // Corresponding KV head
         uint32_t kv_h = h / heads_per_kv;
 
-        // Compute attention scores: scores[t] = dot(q_h, k_cache[kv_h, t]) * scale
-        for (uint32_t t = 0; t < seq_len; ++t) {
+        for (uint32_t t = start_t; t < seq_len; ++t) {
             const float* kt = k_cache +
                 static_cast<size_t>(kv_h) * max_seq_len * head_dim +
                 static_cast<size_t>(t) * head_dim;
@@ -225,16 +249,18 @@ bool causal_attention(const float* q,
             for (uint32_t d = 0; d < head_dim; ++d) {
                 dot += static_cast<double>(qh[d]) * static_cast<double>(kt[d]);
             }
-            scores_ptr[t] = static_cast<float>(dot) * scale;
+            float s = static_cast<float>(dot) * scale;
+            if (attn_logit_softcap > 0.0f) {
+                s = std::tanh(s / attn_logit_softcap) * attn_logit_softcap;
+            }
+            scores_ptr[t - start_t] = s;
         }
 
-        // Causal mask is implicitly satisfied: seq_len only includes past + current tokens.
-        softmax_inplace(scores_ptr, seq_len);
+        softmax_inplace(scores_ptr, active_len);
 
-        // Weighted sum of values: out_h = sum_t scores[t] * v_cache[kv_h, t]
         std::fill(outh, outh + head_dim, 0.0f);
-        for (uint32_t t = 0; t < seq_len; ++t) {
-            float s = scores_ptr[t];
+        for (uint32_t t = start_t; t < seq_len; ++t) {
+            float s = scores_ptr[t - start_t];
             const float* vt = v_cache +
                 static_cast<size_t>(kv_h) * max_seq_len * head_dim +
                 static_cast<size_t>(t) * head_dim;

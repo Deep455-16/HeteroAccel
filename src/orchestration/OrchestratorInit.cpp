@@ -1,5 +1,5 @@
 // src/orchestration/OrchestratorInit.cpp
-// Phase 21: Default Backend Registration
+// Phase 21 / Phase 27: Default Backend Registration
 
 #include "orchestration/OrchestratorInit.h"
 
@@ -10,8 +10,13 @@ void register_default_backends(EngineOrchestrator& orch, const HardwareDetector&
     // HydroXL CPU backend
     BackendCapabilities cpu;
     cpu.backend_id = "hydroxl_cpu";
-    cpu.supported_quant_types = {0, 1, 2, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17};  // all GGML types
-    cpu.supported_arch = {"llama", "qwen2", "mistral", "phi", "gemma"};
+    cpu.supported_quant_types = {0, 1, 2, 3, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17};
+    cpu.supported_arch = {
+        "llama", "qwen2", "qwen2_vl",
+        "mistral", "mistral3",
+        "phi", "phi2", "phi3",
+        "gemma", "gemma2"
+    };
     cpu.requires_cuda = false;
     cpu.requires_vulkan = false;
     cpu.min_vram_bytes = 0;
@@ -28,15 +33,16 @@ void register_default_backends(EngineOrchestrator& orch, const HardwareDetector&
         // Shaders implement ops for quants 0, 1, 7, 8 directly; quant 12 (Q4_K)
         // routes natively to CPU orchestrator target.
         vk.supported_quant_types = {0, 1, 7, 8};
-        vk.supported_arch = {"llama", "qwen2", "mistral", "phi", "gemma"};
+        vk.supported_arch = {
+            "llama", "qwen2", "qwen2_vl",
+            "mistral", "mistral3",
+            "phi", "phi2", "phi3",
+            "gemma", "gemma2"
+        };
         vk.requires_cuda = false;
         vk.requires_vulkan = true;
-        // Unified-memory devices (e.g. Intel Iris Xe) share host RAM; discrete GPUs
-        // with dedicated VRAM still work — set to 0 so the orchestrator does not
-        // incorrectly filter out unified-memory hardware.
         vk.min_vram_bytes = 0;
         vk.min_ram_bytes = 512 * 1024 * 1024;
-        // Phase 22 measured: ~2.5x faster than CPU on Intel Iris Xe (5.2 vs 2.1 tok/s)
         vk.relative_throughput = 2.5f;
         vk.init_cost_ms = 500.0f;
         vk.priority = 20;
@@ -51,16 +57,10 @@ void register_default_backends(EngineOrchestrator& orch, const HardwareDetector&
     {
         BackendCapabilities cuda_b;
         cuda_b.backend_id = "cuda";
-        // llama.cpp/ggml-cuda defines architecture and quantization coverage, not
-        // this list; empty vectors are wildcards. An unsupported model fails to load
-        // and the orchestrator falls back to CPU with the reported reason.
         cuda_b.requires_cuda = true;
         cuda_b.requires_vulkan = false;
         cuda_b.min_vram_bytes = 512ULL * 1024 * 1024;
         cuda_b.min_ram_bytes = 512 * 1024 * 1024;
-        // PRIOR (not a measurement): ranks CUDA above Vulkan/CPU on a device that
-        // passed detection. Replaced by observed tok/s from the PerfProfile once
-        // real runs have been recorded (see EngineOrchestrator::record_performance).
         cuda_b.relative_throughput = 12.0f;
         cuda_b.init_cost_ms = 3000.0f;
         cuda_b.priority = 30;

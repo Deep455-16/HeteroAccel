@@ -156,6 +156,66 @@ inline TinyVocab makeSpmVocab() {
     return v;
 }
 
+// GPT-2 byte-level vocabulary helper
+inline std::string mapGpt2Byte(unsigned char b) {
+    uint32_t cp;
+    if ((b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255)) {
+        cp = b;
+    } else {
+        uint32_t n = 0;
+        cp = 0;
+        for (int i = 0; i < 256; ++i) {
+            if (!((i >= 33 && i <= 126) || (i >= 161 && i <= 172) || (i >= 174 && i <= 255))) {
+                if (i == b) { cp = 256 + n; break; }
+                ++n;
+            }
+        }
+    }
+    std::string s;
+    if (cp < 0x80) {
+        s += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        s += static_cast<char>(0xC0 | (cp >> 6));
+        s += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        s += static_cast<char>(0xE0 | (cp >> 12));
+        s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        s += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+    return s;
+}
+
+struct TinyGpt2Vocab {
+    std::vector<std::string> tokens;
+    std::vector<std::string> merges;
+    std::vector<int32_t> types;
+};
+
+inline TinyGpt2Vocab makeGpt2Vocab() {
+    TinyGpt2Vocab v;
+    for (int b = 0; b < 256; ++b) {
+        v.tokens.push_back(mapGpt2Byte(static_cast<unsigned char>(b)));
+        v.types.push_back(1);
+    }
+    v.tokens.push_back("he");                  v.types.push_back(1);
+    v.tokens.push_back("ll");                  v.types.push_back(1);
+    v.tokens.push_back("llo");                 v.types.push_back(1);
+    v.tokens.push_back("hello");               v.types.push_back(1);
+    v.tokens.push_back(mapGpt2Byte(0x20) + "w"); v.types.push_back(1);
+    v.tokens.push_back("or");                  v.types.push_back(1);
+    v.tokens.push_back("<|endoftext|>");       v.types.push_back(3);
+
+    v.merges = {
+        "h e",
+        "l l",
+        "ll o",
+        "he llo",
+        mapGpt2Byte(0x20) + " w",
+        "o r"
+    };
+    return v;
+}
+
 struct TinyLlamaSpec {
     uint32_t n_embd = 64;
     uint32_t n_head = 4;
@@ -219,6 +279,164 @@ inline uint32_t writeTinyLlama(const std::string& path, const TinyLlamaSpec& sp 
     }
     ones("output_norm.weight", sp.n_embd);
     mat("output.weight", sp.n_embd, n_vocab);
+
+    w.write(path);
+    return n_vocab;
+}
+
+// Universal architecture fixture generator (Phase 27)
+struct TinyArchSpec {
+    std::string arch       = "llama"; // "llama", "mistral", "mistral3", "qwen2", "phi3", "gemma", "gemma2"
+    std::string tok_model  = "llama"; // "llama" or "gpt2"
+    uint32_t n_embd        = 64;
+    uint32_t n_head        = 4;
+    uint32_t n_kv_head     = 2;
+    uint32_t n_layer       = 2;
+    uint32_t n_ff          = 128;
+    uint32_t n_ctx         = 128;
+    float    rms_eps       = 1e-5f;
+    float    rope_base     = 10000.0f;
+    bool     qkv_bias      = false;
+    bool     fused_qkv     = false;
+    bool     fused_ffn_up  = false;
+    bool     tied_lm_head  = false;
+    bool     post_norms    = false;
+    float    attn_softcap  = 0.0f;
+    float    final_softcap = 0.0f;
+    uint32_t sliding_win   = 0;
+    uint64_t seed          = 2027;
+    float    weight_scale  = 0.08f;
+};
+
+inline uint32_t writeTinyArchModel(const std::string& path, const TinyArchSpec& sp) {
+    GgufWriter w;
+    uint32_t n_vocab = 0;
+
+    if (sp.tok_model == "gpt2") {
+        TinyGpt2Vocab gv = makeGpt2Vocab();
+        n_vocab = static_cast<uint32_t>(gv.tokens.size());
+        w.kvStr("tokenizer.ggml.model", "gpt2");
+        w.kvStr("tokenizer.ggml.pre", "qwen2");
+        w.kvStrArr("tokenizer.ggml.tokens", gv.tokens);
+        w.kvStrArr("tokenizer.ggml.merges", gv.merges);
+        w.kvI32Arr("tokenizer.ggml.token_type", gv.types);
+        w.kvU32("tokenizer.ggml.bos_token_id", n_vocab - 1);
+        w.kvU32("tokenizer.ggml.eos_token_id", n_vocab - 1);
+        w.kvBool("tokenizer.ggml.add_bos_token", false);
+    } else {
+        TinyVocab sv = makeSpmVocab();
+        for (const char* p : {"hell", "hello", "wo", "wor", "worl", "world"}) {
+            sv.tokens.push_back(p);
+            sv.scores.push_back(-1.0f);
+            sv.types.push_back(1);
+        }
+        sv.tokens.push_back("<|endoftext|>");
+        sv.scores.push_back(0.0f);
+        sv.types.push_back(3);
+        n_vocab = static_cast<uint32_t>(sv.tokens.size());
+        w.kvStr("tokenizer.ggml.model", "llama");
+        w.kvStrArr("tokenizer.ggml.tokens", sv.tokens);
+        w.kvF32Arr("tokenizer.ggml.scores", sv.scores);
+        w.kvI32Arr("tokenizer.ggml.token_type", sv.types);
+        w.kvU32("tokenizer.ggml.bos_token_id", 1);
+        w.kvU32("tokenizer.ggml.eos_token_id", 2);
+        w.kvU32("tokenizer.ggml.unknown_token_id", 0);
+        w.kvBool("tokenizer.ggml.add_bos_token", true);
+        if (sp.arch == "gemma" || sp.arch == "gemma2") {
+            w.kvBool("tokenizer.ggml.add_space_prefix", false);
+        }
+    }
+
+    const uint32_t head_dim = sp.n_embd / sp.n_head;
+
+    w.kvStr("general.architecture", sp.arch);
+    w.kvStr("general.name", "heteroaccel-p27-" + sp.arch);
+    w.kvU32(sp.arch + ".vocab_size", n_vocab);
+    w.kvU32(sp.arch + ".context_length", sp.n_ctx);
+    w.kvU32(sp.arch + ".embedding_length", sp.n_embd);
+    w.kvU32(sp.arch + ".block_count", sp.n_layer);
+    w.kvU32(sp.arch + ".feed_forward_length", sp.n_ff);
+    w.kvU32(sp.arch + ".attention.head_count", sp.n_head);
+    w.kvU32(sp.arch + ".attention.head_count_kv", sp.n_kv_head);
+    w.kvU32(sp.arch + ".attention.key_length", head_dim);
+    w.kvU32(sp.arch + ".attention.value_length", head_dim);
+    w.kvF32(sp.arch + ".attention.layer_norm_rms_epsilon", sp.rms_eps);
+    w.kvU32(sp.arch + ".rope.dimension_count", head_dim);
+    w.kvF32(sp.arch + ".rope.freq_base", sp.rope_base);
+
+    if (sp.sliding_win > 0) {
+        w.kvU32(sp.arch + ".attention.sliding_window", sp.sliding_win);
+    }
+    if (sp.attn_softcap > 0.0f) {
+        w.kvF32(sp.arch + ".attn_logit_softcapping", sp.attn_softcap);
+    }
+    if (sp.final_softcap > 0.0f) {
+        w.kvF32(sp.arch + ".final_logit_softcapping", sp.final_softcap);
+    }
+
+    Rng rng(sp.seed);
+    const float s = sp.weight_scale;
+    auto mat = [&](const std::string& name, uint64_t in, uint64_t out) {
+        w.tensorF32(name, {in, out}, randomMatrix(rng, static_cast<size_t>(in * out), s));
+    };
+    auto vec_rand = [&](const std::string& name, uint64_t n, float scale) {
+        w.tensorF32(name, {n}, randomMatrix(rng, static_cast<size_t>(n), scale));
+    };
+    auto norm_vec = [&](const std::string& name, uint64_t n) {
+        std::vector<float> nv(static_cast<size_t>(n));
+        for (size_t i = 0; i < nv.size(); ++i) {
+            nv[i] = 0.85f + 0.3f * rng.uniform();
+        }
+        w.tensorF32(name, {n}, nv);
+    };
+
+    mat("token_embd.weight", sp.n_embd, n_vocab);
+
+    for (uint32_t l = 0; l < sp.n_layer; ++l) {
+        const std::string b = "blk." + std::to_string(l) + ".";
+        norm_vec(b + "attn_norm.weight", sp.n_embd);
+
+        uint64_t q_rows  = static_cast<uint64_t>(sp.n_head)    * head_dim;
+        uint64_t kv_rows = static_cast<uint64_t>(sp.n_kv_head) * head_dim;
+
+        if (sp.fused_qkv) {
+            mat(b + "attn_qkv.weight", sp.n_embd, q_rows + 2 * kv_rows);
+            if (sp.qkv_bias) {
+                vec_rand(b + "attn_qkv.bias", q_rows + 2 * kv_rows, 0.02f);
+            }
+        } else {
+            mat(b + "attn_q.weight", sp.n_embd, q_rows);
+            mat(b + "attn_k.weight", sp.n_embd, kv_rows);
+            mat(b + "attn_v.weight", sp.n_embd, kv_rows);
+            if (sp.qkv_bias) {
+                vec_rand(b + "attn_q.bias", q_rows,  0.02f);
+                vec_rand(b + "attn_k.bias", kv_rows, 0.02f);
+                vec_rand(b + "attn_v.bias", kv_rows, 0.02f);
+            }
+        }
+
+        mat(b + "attn_output.weight", q_rows, sp.n_embd);
+        if (sp.post_norms) {
+            norm_vec(b + "post_attention_norm.weight", sp.n_embd);
+        }
+
+        norm_vec(b + "ffn_norm.weight", sp.n_embd);
+        if (sp.fused_ffn_up) {
+            mat(b + "ffn_up.weight", sp.n_embd, 2 * static_cast<uint64_t>(sp.n_ff));
+        } else {
+            mat(b + "ffn_gate.weight", sp.n_embd, sp.n_ff);
+            mat(b + "ffn_up.weight",   sp.n_embd, sp.n_ff);
+        }
+        mat(b + "ffn_down.weight", sp.n_ff, sp.n_embd);
+        if (sp.post_norms) {
+            norm_vec(b + "post_ffw_norm.weight", sp.n_embd);
+        }
+    }
+
+    norm_vec("output_norm.weight", sp.n_embd);
+    if (!sp.tied_lm_head) {
+        mat("output.weight", sp.n_embd, n_vocab);
+    }
 
     w.write(path);
     return n_vocab;

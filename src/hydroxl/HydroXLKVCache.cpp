@@ -58,14 +58,13 @@ bool HydroXLKVCache::writeKV(uint32_t layer, uint32_t pos,
     if (pos >= max_seq_len_)            return false;
     if (!k_vec || !v_vec)              return false;
 
-    size_t vec_len = static_cast<size_t>(n_kv_heads_) * head_dim_;
-    size_t offset  = static_cast<size_t>(pos) * n_kv_heads_ * head_dim_;
-
-    // Check bounds
-    if (offset + vec_len > k_data_[layer].size()) return false;
-
-    std::memcpy(k_data_[layer].data() + offset, k_vec, vec_len * sizeof(float));
-    std::memcpy(v_data_[layer].data() + offset, v_vec, vec_len * sizeof(float));
+    for (uint32_t h = 0; h < n_kv_heads_; ++h) {
+        size_t dst_off = (static_cast<size_t>(h) * max_seq_len_ + pos) * head_dim_;
+        size_t src_off = static_cast<size_t>(h) * head_dim_;
+        if (dst_off + head_dim_ > k_data_[layer].size()) return false;
+        std::memcpy(k_data_[layer].data() + dst_off, k_vec + src_off, head_dim_ * sizeof(float));
+        std::memcpy(v_data_[layer].data() + dst_off, v_vec + src_off, head_dim_ * sizeof(float));
+    }
     return true;
 }
 

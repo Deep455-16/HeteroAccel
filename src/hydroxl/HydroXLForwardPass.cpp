@@ -1,5 +1,5 @@
 // src/hydroxl/HydroXLForwardPass.cpp
-// Phase 17: Qwen2 transformer forward pass — incremental decoding.
+// Phase 17 / Phase 27: Universal transformer forward pass — incremental decoding.
 
 #include "hydroxl/HydroXLForwardPass.h"
 #include "hydroxl/HydroXLOps.h"
@@ -34,16 +34,18 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
     }
 
     const Qwen2HParams& hp = model_->hparams();
-    uint32_t n_embd    = hp.n_embd;
-    uint32_t n_heads   = hp.n_heads;
-    uint32_t n_kv      = hp.n_kv_heads;
-    uint32_t head_dim  = hp.n_head_dim;
-    uint32_t n_ff      = hp.n_ff;
-    uint32_t vocab     = hp.vocab_size;
-    float    rope_base = hp.rope_freq_base;
+    uint32_t n_embd     = hp.n_embd;
+    uint32_t n_heads    = hp.n_heads;
+    uint32_t n_kv       = hp.n_kv_heads;
+    uint32_t head_dim   = hp.n_head_dim;
+    uint32_t rope_dim   = (hp.n_rope_dim > 0) ? hp.n_rope_dim : head_dim;
+    uint32_t n_ff       = hp.n_ff;
+    uint32_t vocab      = hp.vocab_size;
+    float    rope_base  = hp.rope_freq_base;
+    float    rope_scale = hp.rope_freq_scale;
+    bool     neox_rope  = (hp.rope_type == RoPEType::NEOX);
     float    attn_scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
-    // ---- Allocate / resize scratch buffers (first call only) ----
     hidden_.resize(n_embd);
     normed_.resize(n_embd);
     q_buf_.resize(n_heads * head_dim);
@@ -58,14 +60,19 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
     attn_scores_.resize(kv_cache_->maxSeqLen());
     logits.resize(vocab);
 
-    // ---- Step 1: Embedding lookup ----
+    // ---- Step 1: Embedding lookup (+ Gemma sqrt(n_embd) scaling) ----
     if (!embed_lookup(model_->tokenEmbedding().data(), token_id,
                       vocab, n_embd, hidden_.data())) {
         last_error_ = "Invalid token_id=" + std::to_string(token_id);
         return false;
     }
+    if (hp.embedding_scale != 1.0f) {
+        for (uint32_t i = 0; i < n_embd; ++i) {
+            hidden_[i] *= hp.embedding_scale;
+        }
+    }
 
-    // ---- Steps 2–...: Transformer layers ----
+    // ---- Step 2: Transformer layers ----
     for (uint32_t l = 0; l < hp.n_layers; ++l) {
         const Qwen2LayerWeights& w = model_->layer(l);
 
@@ -84,7 +91,7 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
         matvec(w.attn_v.data(), normed_.data(), v_buf_.data(),
                n_kv   * head_dim, n_embd);
 
-        // Add biases if present (Qwen2 has QKV biases)
+        // Add biases if present (Qwen2 / Phi-3)
         if (!w.attn_q_bias.empty()) {
             for (uint32_t i = 0; i < n_heads * head_dim; ++i)
                 q_buf_[i] += w.attn_q_bias[i];
@@ -98,10 +105,11 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
                 v_buf_[i] += w.attn_v_bias[i];
         }
 
-        // --- 2c. RoPE ---
-        rope_apply(q_buf_.data(), n_heads,
-                   k_buf_.data(), n_kv,
-                   head_dim, pos, rope_base, 1.0f);
+        // --- 2c. RoPE (NORM or NEOX, partial rope_dim) ---
+        rope_apply_ext(q_buf_.data(), n_heads,
+                       k_buf_.data(), n_kv,
+                       head_dim, rope_dim, pos,
+                       rope_base, rope_scale, neox_rope);
 
         // --- 2d. Write K, V to cache ---
         if (!kv_cache_->writeKV(l, pos, k_buf_.data(), v_buf_.data())) {
@@ -109,8 +117,8 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
             return false;
         }
 
-        // --- 2e. Causal attention (GQA) ---
-        uint32_t seq_len = pos + 1; // current position is already written
+        // --- 2e. Causal attention (GQA, optional softcapping & sliding window) ---
+        uint32_t seq_len = pos + 1;
         if (!causal_attention(q_buf_.data(),
                               kv_cache_->kLayer(l),
                               kv_cache_->vLayer(l),
@@ -119,15 +127,20 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
                               n_heads, n_kv, head_dim,
                               kv_cache_->maxSeqLen(),
                               attn_scale,
-                              attn_scores_.data())) {
+                              attn_scores_.data(),
+                              hp.attn_logit_softcap,
+                              hp.sliding_window)) {
             last_error_ = "causal_attention failed at layer " + std::to_string(l);
             return false;
         }
 
-        // --- 2f. Output projection ---
-        // attn_out_ is [n_heads * head_dim]; project to [n_embd]
+        // --- 2f. Output projection (+ optional Gemma 2 post-attention norm) ---
         matvec(w.attn_out.data(), attn_out_.data(), proj_out_.data(),
                n_embd, n_heads * head_dim);
+        if (!w.post_attn_norm.empty()) {
+            rms_norm(proj_out_.data(), w.post_attn_norm.data(), proj_out_.data(),
+                     n_embd, hp.rms_norm_eps);
+        }
 
         // --- 2g. Residual add (attention) ---
         residual_add(hidden_.data(), proj_out_.data(), n_embd);
@@ -139,15 +152,19 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
             return false;
         }
 
-        // --- 2i. SwiGLU FFN ---
-        // gate = W_gate * normed   [n_ff]
+        // --- 2i. SwiGLU / GeGLU FFN (+ optional Gemma 2 post-FFN norm) ---
         matvec(w.ffn_gate.data(), normed_.data(), gate_buf_.data(), n_ff, n_embd);
-        // up   = W_up   * normed   [n_ff]
         matvec(w.ffn_up.data(),   normed_.data(), up_buf_.data(),   n_ff, n_embd);
-        // ffn_buf = silu(gate) * up
-        swiglu(gate_buf_.data(), up_buf_.data(), ffn_buf_.data(), n_ff);
-        // down = W_down * ffn_buf  [n_embd]
+        if (hp.ffn_activation == FFNActivation::GEGLU) {
+            geglu(gate_buf_.data(), up_buf_.data(), ffn_buf_.data(), n_ff);
+        } else {
+            swiglu(gate_buf_.data(), up_buf_.data(), ffn_buf_.data(), n_ff);
+        }
         matvec(w.ffn_down.data(), ffn_buf_.data(), ffn_out_.data(), n_embd, n_ff);
+        if (!w.post_ffn_norm.empty()) {
+            rms_norm(ffn_out_.data(), w.post_ffn_norm.data(), ffn_out_.data(),
+                     n_embd, hp.rms_norm_eps);
+        }
 
         // --- 2j. Residual add (FFN) ---
         residual_add(hidden_.data(), ffn_out_.data(), n_embd);
@@ -160,8 +177,11 @@ bool HydroXLForwardPass::forward(uint32_t token_id, uint32_t pos,
         return false;
     }
 
-    // ---- Step 4: LM head → logits ----
+    // ---- Step 4: LM head → logits (+ optional Gemma 2 final logit softcapping) ----
     matvec(model_->lmHead().data(), normed_.data(), logits.data(), vocab, n_embd);
+    if (hp.final_logit_softcap > 0.0f) {
+        softcap_inplace(logits.data(), vocab, hp.final_logit_softcap);
+    }
 
     return true;
 }
