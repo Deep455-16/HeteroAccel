@@ -1,52 +1,66 @@
-# HeteroAccel
+<div align="center">
 
-**A hardware-aware inference runtime for local LLMs: detect the machine, check what each backend can actually run, plan the execution, and fall back safely.**
+<img src="docs/assets/banner.svg" alt="HeteroAccel: a hardware-aware inference runtime for local LLMs" width="100%">
 
-![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C)
-![CMake 3.20+](https://img.shields.io/badge/CMake-3.20%2B-064F8C)
-![Platform: Windows](https://img.shields.io/badge/platform-Windows%20(verified)-0078D4)
-![Status: active development](https://img.shields.io/badge/status-active%20development-orange)
+<br>
+
+**Detect the machine, check what each backend can actually run, plan the execution, and fall back safely.**
+
+![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)
+![CMake 3.20+](https://img.shields.io/badge/CMake-3.20%2B-064F8C?style=for-the-badge&logo=cmake&logoColor=white)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows%20(verified)-0078D4?style=for-the-badge&logo=windows&logoColor=white)
+![Vulkan](https://img.shields.io/badge/Vulkan-compute-AC162C?style=for-the-badge&logo=vulkan&logoColor=white)
+![Status: active development](https://img.shields.io/badge/status-active%20development-orange?style=for-the-badge)
+
+[Why](#-why-heteroaccel) · [Status](#-status-at-a-glance) · [Architecture](#-architecture) · [Phases](#-phase-progress) · [Quick start](#-quick-start) · [Usage](#-usage) · [Performance](#-performance) · [Testing](#-testing) · [Limitations](#-known-limitations) · [Layout](#-repository-layout) · [Developer guide](#-developer-guide) · [Troubleshooting](#-troubleshooting) · [Contributing](#-contributing)
+
+</div>
 
 HeteroAccel is the runtime layer *around* inference engines. It inspects CPU, memory, Vulkan and CUDA capabilities, analyzes a GGUF model's requirements, plans residency and placement, schedules work, and drives either an external engine (llama.cpp) or its own native engine (**HydroXL**).
 
-> **Read this first.** Everything below is derived from the source tree at the latest commit. Results were measured on **one machine** (Intel Core i5-1235U, Intel Iris Xe, 16 GB RAM, Windows). CUDA has never been run and is **not enabled in the current build**. See [Status at a glance](#status-at-a-glance) and [Known limitations](#known-limitations).
+<img src="docs/assets/pipeline.svg" alt="Pipeline: detect, check, plan, execute, fall back safely" width="100%">
 
-## Contents
+> [!IMPORTANT]
+> **Read this first.** Everything below is derived from the source tree at the latest commit. Results were measured on **one machine** (Intel Core i5-1235U, Intel Iris Xe, 16 GB RAM, Windows). CUDA has never been run and is **not enabled in the current build**. See [Status at a glance](#-status-at-a-glance) and [Known limitations](#-known-limitations).
 
-[Why HeteroAccel](#why-heteroaccel) · [Status at a glance](#status-at-a-glance) · [Architecture](#architecture) · [Phase progress](#phase-progress) · [Quick start](#quick-start) · [Usage](#usage) · [Performance](#performance) · [Testing](#testing) · [Known limitations](#known-limitations) · [Repository layout](#repository-layout) · [Developer guide](#developer-guide) · [Troubleshooting](#troubleshooting) · [Contributing](#contributing)
+## 📑 Contents
+
+[Why HeteroAccel](#-why-heteroaccel) · [Status at a glance](#-status-at-a-glance) · [Architecture](#-architecture) · [Phase progress](#-phase-progress) · [Quick start](#-quick-start) · [Usage](#-usage) · [Performance](#-performance) · [Testing](#-testing) · [Known limitations](#-known-limitations) · [Repository layout](#-repository-layout) · [Developer guide](#-developer-guide) · [Troubleshooting](#-troubleshooting) · [Contributing](#-contributing)
 
 ---
 
-## Why HeteroAccel
+## 🎯 Why HeteroAccel
 
 Calling an inference engine directly assumes the model fits, the backend works, and the hardware is what you expect. HeteroAccel adds the decisions in front of that call:
 
 | Problem | What HeteroAccel does |
 |---|---|
-| "Will this model run here?" | `analyze` and `plan` inspect the GGUF and the detected hardware and explain the verdict before anything is loaded. |
-| Backend detected ≠ backend usable | Backends declare supported quantization types, architectures and hardware gates; the orchestrator filters on those, not just on "a GPU exists". |
-| Limited RAM / VRAM | Memory manager, residency tracking, streaming, prefetch and LRU/priority eviction (Phases 4, 6, 14). |
-| Backend fails at runtime | Orchestrator falls back to the CPU engine and reports that it did. |
-| Engine lock-in | Engines sit behind `IExecutionEngine` / `IInferenceEngine`; llama.cpp and HydroXL are two implementations. |
-| Opaque performance | Profiler and performance history feed the scheduler and orchestrator scoring. |
+| ❓ "Will this model run here?" | `analyze` and `plan` inspect the GGUF and the detected hardware and explain the verdict before anything is loaded. |
+| 🔌 Backend detected ≠ backend usable | Backends declare supported quantization types, architectures and hardware gates; the orchestrator filters on those, not just on "a GPU exists". |
+| 💾 Limited RAM / VRAM | Memory manager, residency tracking, streaming, prefetch and LRU/priority eviction (Phases 4, 6, 14). |
+| 🛟 Backend fails at runtime | Orchestrator falls back to the CPU engine and reports that it did. |
+| 🔒 Engine lock-in | Engines sit behind `IExecutionEngine` / `IInferenceEngine`; llama.cpp and HydroXL are two implementations. |
+| 📈 Opaque performance | Profiler and performance history feed the scheduler and orchestrator scoring. |
 
-**HydroXL** is the native engine: its own GGUF parser, dequantizer, BPE tokenizer, KV cache, sampler and transformer forward pass, with an optional Vulkan compute path. It does not link llama.cpp for execution. It is intentionally narrow (see [limitations](#known-limitations)).
+**HydroXL** is the native engine: its own GGUF parser, dequantizer, BPE tokenizer, KV cache, sampler and transformer forward pass, with an optional Vulkan compute path. It does not link llama.cpp for execution. It is intentionally narrow (see [limitations](#-known-limitations)).
 
-## Status at a glance
+## 🚦 Status at a glance
 
-| Area | Status | Notes |
-|---|---|---|
-| CPU inference via llama.cpp | Implemented | `llm`, `run`, `chat`. llama.cpp pinned to tag `b9999` via CMake `FetchContent`. |
-| Vulkan inference via llama.cpp | Implemented | Built with `GGML_VULKAN=ON`. Tested on Intel Iris Xe only. |
-| HydroXL native CPU engine | Implemented | `hydroxl` CLI command. Qwen2 architecture only. |
-| HydroXL Vulkan engine | Implemented, **API/test-only** | `HydroXLVulkanEngineAdapter`; hybrid CPU/GPU. No CLI command exposes it. Verified on Iris Xe only. |
-| Hardware-aware orchestrator | Implemented, **library-only** | `EngineOrchestrator` is exercised by tests; the CLI does not call it. |
-| Plugin loader | Implemented, **Windows-only, not wired** | Native DLL ABI; plugins are not registered as engines and not connected to the orchestrator. |
-| CUDA | **Not available in this build** | Detection code exists; no CUDA kernels, no CUDA engine adapter, `GGML_CUDA` forced `OFF`, and the orchestrator's CUDA registration is behind a macro the build never defines. |
-| Linux / macOS | **Unverified** | `PluginLoader.cpp` includes `<windows.h>` unconditionally and is part of the default build. |
-| AMD / NVIDIA / ARM Vulkan devices | **Untested** | Vendor detection exists; no inference results. |
+Legend: ✅ implemented · 🧪 implemented but API/test-only or library-only · ⛔ not available · ❔ unverified or untested
 
-## Architecture
+| | Area | Status | Notes |
+|---|---|---|---|
+| ✅ | CPU inference via llama.cpp | Implemented | `llm`, `run`, `chat`. llama.cpp pinned to tag `b9999` via CMake `FetchContent`. |
+| ✅ | Vulkan inference via llama.cpp | Implemented | Built with `GGML_VULKAN=ON`. Tested on Intel Iris Xe only. |
+| ✅ | HydroXL native CPU engine | Implemented | `hydroxl` CLI command. Qwen2 architecture only. |
+| 🧪 | HydroXL Vulkan engine | Implemented, **API/test-only** | `HydroXLVulkanEngineAdapter`; hybrid CPU/GPU. No CLI command exposes it. Verified on Iris Xe only. |
+| 🧪 | Hardware-aware orchestrator | Implemented, **library-only** | `EngineOrchestrator` is exercised by tests; the CLI does not call it. |
+| 🧪 | Plugin loader | Implemented, **Windows-only, not wired** | Native DLL ABI; plugins are not registered as engines and not connected to the orchestrator. |
+| ⛔ | CUDA | **Not available in this build** | Detection code exists; no CUDA kernels, no CUDA engine adapter, `GGML_CUDA` forced `OFF`, and the orchestrator's CUDA registration is behind a macro the build never defines. |
+| ❔ | Linux / macOS | **Unverified** | `PluginLoader.cpp` includes `<windows.h>` unconditionally and is part of the default build. |
+| ❔ | AMD / NVIDIA / ARM Vulkan devices | **Untested** | Vendor detection exists; no inference results. |
+
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TB
@@ -102,20 +116,22 @@ flowchart TB
 
 Solid lines are wired in code. The orchestrator is not reached from the CLI today, and the dotted plugin link marks a **planned** integration, not a working one.
 
-### Two inference paths
+### 🔀 Two inference paths
+
+<img src="docs/assets/inference-paths.svg" alt="Two inference paths: llama.cpp and HydroXL" width="100%">
 
 1. **llama.cpp path** (`llm`, `run`, `chat`, `benchmark llm`): `HeteroRuntime` → `LlamaCppBackend` → llama.cpp. llama.cpp is built with Vulkan on and CUDA off.
 2. **HydroXL path**: GGUF → native loader → dequantize every weight to float32 at load time → native forward pass.
    - **CPU:** `adaptive-gpu hydroxl ...` (via `HydroXLEngine`) or `HydroXLCpuEngineAdapter`.
    - **Vulkan hybrid:** `HydroXLVulkanEngineAdapter`, selectable through `EngineOrchestrator`.
 
-### Hardware detection and capability checks
+### 🔍 Hardware detection and capability checks
 
 - **Phase 1 detectors** (`src/hardware`): CPU, memory, GPU (DXGI on Windows), Vulkan, and CUDA. CUDA is probed by loading the NVIDIA driver library at runtime (no CUDA SDK needed); this has not been exercised on NVIDIA hardware. Output: `adaptive-gpu hardware [--json]`.
 - **Phase 21 detector** (`src/orchestration/HardwareDetector`): singleton registry of RAM, CPU and every Vulkan device (VRAM from the device-local heap, vendor ID, queue count, driver version), with a DXGI fallback and a mock mode for deterministic tests.
 - **Backend capability descriptors** (`BackendCapabilities`): supported GGML quantization IDs, supported architectures, `requires_vulkan` / `requires_cuda`, minimum VRAM/RAM, a heuristic throughput, cold-start cost, and priority. `is_available(hw)` checks the hardware gates.
 
-### Orchestration
+### 🧭 Orchestration
 
 ```mermaid
 flowchart TD
@@ -144,9 +160,10 @@ flowchart TD
 | `hydroxl_vulkan` | Vulkan detected | 2.5 (taken from the Iris Xe measurement) | 500 ms | 20 |
 | `cuda` | only if built with `HETEROACCEL_CUDA_ENABLED` and CUDA detected | 5.0 (heuristic, never measured) | 3000 ms | 30 |
 
-> The registered quantization and architecture lists are **wider than what HydroXL can load** (see [limitations](#known-limitations)). The orchestrator will not stop you from selecting a backend for a model HydroXL then rejects at load time.
+> [!WARNING]
+> The registered quantization and architecture lists are **wider than what HydroXL can load** (see [limitations](#-known-limitations)). The orchestrator will not stop you from selecting a backend for a model HydroXL then rejects at load time.
 
-### HydroXL Vulkan execution (Phase 22)
+### ⚡ HydroXL Vulkan execution (Phase 22)
 
 Weights are dequantized on the CPU, uploaded once as float32 device buffers, and reused. Each GPU operation takes **host pointers**: inputs are uploaded and outputs downloaded per call, so activations round-trip between host and device. Only weights stay device-resident.
 
@@ -172,45 +189,45 @@ flowchart LR
 
 Shaders in `shaders/`, compiled to SPIR-V at build time: `hydroxl_matvec.comp` (one workgroup per output row, 256 threads, shared-memory reduction), `hydroxl_rmsnorm.comp`, `hydroxl_elemwise.comp` (residual add / SiLU / SwiGLU via push constant), `hydroxl_softmax.comp`, plus `vector_add.comp` from Phase 2. Softmax is not called from the Vulkan forward pass (attention runs on the CPU).
 
-### Plugin system
+### 🧩 Plugin system
 
 `src/plugin` defines a C-linkage, `__stdcall` DLL ABI (`PluginAbis.h`, ABI version 1) and a host loader with discover / load / execute / unload and ABI-version rejection. Plugins run **in-process with full host privileges and no sandbox**. A loaded plugin is invoked through `plugin_execute()`; it is **not** an `IExecutionEngine`, and the orchestrator does not discover plugins. The build produces two test plugins: `hydroxl_test_plugin` (valid) and `test_plugin_badabi` (negative control). See [docs/phase18-plugin.md](docs/phase18-plugin.md).
 
-## Phase progress
+## 🗺️ Phase progress
 
 "Implemented" means source exists, tests are registered in `tests/CMakeLists.txt`, and a commit marks the phase. It does **not** mean every scenario was verified on every machine; the Notes column says what is missing.
 
 | Phase | Capability | Status | Notes |
 |---|---|---|---|
-| 1–2 | Hardware detection; Vulkan compute backend (vector add) | Implemented | Verified on Iris Xe; logs in [phase2_verification_logs/](phase2_verification_logs/). |
-| 3 | llama.cpp integration with Vulkan offload | Implemented | See [docs/phase3-setup.md](docs/phase3-setup.md). |
-| 4 | Unified memory manager; automatic backend selection | Implemented | CUDA allocator is a stub (returns invalid blocks). |
-| 5 | Adaptive heterogeneous scheduler, cost model | Implemented | CUDA worker only runs through a caller-supplied callback. |
-| 6 | Model/layer manager, streaming, prefetch | Implemented | |
-| 7 | `HeteroRuntime`, `run`, `chat` | Implemented | llama.cpp backend. |
-| 8 | Profiling, performance history, auto-tuning | Implemented | |
-| 9 | Execution policies, multi-workload scheduling | Implemented | |
-| 10 | Production hardening | Implemented | |
-| 11 | Universal execution engine interface and registry | Implemented | [docs/architecture.md](docs/architecture.md) |
-| 12 | GGUF inspection and capability analysis | Implemented | `analyze` |
-| 13 | Execution planner | Implemented | `plan`. `STREAMING` plans are advisory (see [docs/phase13-execution-planner.md](docs/phase13-execution-planner.md)). |
-| 14 | Model residency and streaming | Implemented | `residency`. Real-GGUF tests skip without a model. |
-| 15 | Heterogeneous execution graph | Implemented | `graph` |
-| 16 | Native tensor/buffer primitives | Implemented | Scalar CPU ops only; Vulkan operator library arrived in Phase 22. [docs/phase16-primitives.md](docs/phase16-primitives.md) |
-| 17 | HydroXL native engine | Implemented | CPU, scalar float32. [docs/phase17-hydroxl.md](docs/phase17-hydroxl.md) |
-| 18–19 | Plugin ABI and loader; dequantization vs. GGML reference; GPT-2 BPE tokenizer | Implemented (Windows) | Plugin not wired to the registry. Q2_K/Q5_K/Q4_0/Q4_1 are parsed but **not** dequantized. [docs/phase19-dequant.md](docs/phase19-dequant.md) |
-| 20 | HydroXL optimizations | Implemented | See below. [docs/phase20-improvements.md](docs/phase20-improvements.md) |
-| 21 | Hardware-aware orchestration | Implemented | Called by `adaptive-gpu infer` (Phase 25). [docs/phase21-universal-orchestration.md](docs/phase21-universal-orchestration.md) |
-| 22 | HydroXL Vulkan tensor execution | Implemented (API/test) | Iris Xe only. [docs/phase22-vulkan-execution.md](docs/phase22-vulkan-execution.md) |
-| 23 | Stable public C API and C++ RAII SDK | Implemented | ABI-stable C API (heteroaccel.h), header-only C++17 SDK (HeteroAccel.hpp), static + DLL targets. [docs/phase23-public-api-sdk.md](docs/phase23-public-api-sdk.md) |
-| 24 | Native streaming and intelligent runtime resource management | Implemented | True per-token streaming, cancellation, MemoryEstimator, persistent PerfProfile, Python bindings, CMake package. [docs/phase24-streaming-resource-management.md](docs/phase24-streaming-resource-management.md) |
-| 25 | Release readiness | Implemented | `adaptive-gpu infer` wires `EngineOrchestrator` into CLI; MIT LICENSE; version 0.25.0; 120 tests. [docs/phase25-release-readiness.md](docs/phase25-release-readiness.md) |
+| 1–2 | Hardware detection; Vulkan compute backend (vector add) | ✅ Implemented | Verified on Iris Xe; logs in [phase2_verification_logs/](phase2_verification_logs/). |
+| 3 | llama.cpp integration with Vulkan offload | ✅ Implemented | See [docs/phase3-setup.md](docs/phase3-setup.md). |
+| 4 | Unified memory manager; automatic backend selection | ✅ Implemented | CUDA allocator is a stub (returns invalid blocks). |
+| 5 | Adaptive heterogeneous scheduler, cost model | ✅ Implemented | CUDA worker only runs through a caller-supplied callback. |
+| 6 | Model/layer manager, streaming, prefetch | ✅ Implemented | |
+| 7 | `HeteroRuntime`, `run`, `chat` | ✅ Implemented | llama.cpp backend. |
+| 8 | Profiling, performance history, auto-tuning | ✅ Implemented | |
+| 9 | Execution policies, multi-workload scheduling | ✅ Implemented | |
+| 10 | Production hardening | ✅ Implemented | |
+| 11 | Universal execution engine interface and registry | ✅ Implemented | [docs/architecture.md](docs/architecture.md) |
+| 12 | GGUF inspection and capability analysis | ✅ Implemented | `analyze` |
+| 13 | Execution planner | ✅ Implemented | `plan`. `STREAMING` plans are advisory (see [docs/phase13-execution-planner.md](docs/phase13-execution-planner.md)). |
+| 14 | Model residency and streaming | ✅ Implemented | `residency`. Real-GGUF tests skip without a model. |
+| 15 | Heterogeneous execution graph | ✅ Implemented | `graph` |
+| 16 | Native tensor/buffer primitives | ✅ Implemented | Scalar CPU ops only; Vulkan operator library arrived in Phase 22. [docs/phase16-primitives.md](docs/phase16-primitives.md) |
+| 17 | HydroXL native engine | ✅ Implemented | CPU, scalar float32. [docs/phase17-hydroxl.md](docs/phase17-hydroxl.md) |
+| 18–19 | Plugin ABI and loader; dequantization vs. GGML reference; GPT-2 BPE tokenizer | ✅ Implemented (Windows) | Plugin not wired to the registry. Q2_K/Q5_K/Q4_0/Q4_1 are parsed but **not** dequantized. [docs/phase19-dequant.md](docs/phase19-dequant.md) |
+| 20 | HydroXL optimizations | ✅ Implemented | See below. [docs/phase20-improvements.md](docs/phase20-improvements.md) |
+| 21 | Hardware-aware orchestration | ✅ Implemented | Called by `adaptive-gpu infer` (Phase 25). [docs/phase21-universal-orchestration.md](docs/phase21-universal-orchestration.md) |
+| 22 | HydroXL Vulkan tensor execution | 🧪 Implemented (API/test) | Iris Xe only. [docs/phase22-vulkan-execution.md](docs/phase22-vulkan-execution.md) |
+| 23 | Stable public C API and C++ RAII SDK | ✅ Implemented | ABI-stable C API (heteroaccel.h), header-only C++17 SDK (HeteroAccel.hpp), static + DLL targets. [docs/phase23-public-api-sdk.md](docs/phase23-public-api-sdk.md) |
+| 24 | Native streaming and intelligent runtime resource management | ✅ Implemented | True per-token streaming, cancellation, MemoryEstimator, persistent PerfProfile, Python bindings, CMake package. [docs/phase24-streaming-resource-management.md](docs/phase24-streaming-resource-management.md) |
+| 25 | Release readiness | ✅ Implemented | `adaptive-gpu infer` wires `EngineOrchestrator` into CLI; MIT LICENSE; version 0.25.0; 120 tests. [docs/phase25-release-readiness.md](docs/phase25-release-readiness.md) |
 
-**Phase 20** (per its documentation): bounds and 64-bit overflow checks in GGUF/tensor loading; truncated-tensor detection; up-front context-limit rejection; tied LM-head sharing (avoids a ~544.6 MB duplicate for Qwen2.5-0.5B); reused scratch buffers in load, attention and sampling; multi-threaded dequantization via `std::async`; 4-way unrolled float `matvec`. Numbers are in [Performance](#performance).
+**Phase 20** (per its documentation): bounds and 64-bit overflow checks in GGUF/tensor loading; truncated-tensor detection; up-front context-limit rejection; tied LM-head sharing (avoids a ~544.6 MB duplicate for Qwen2.5-0.5B); reused scratch buffers in load, attention and sampling; multi-threaded dequantization via `std::async`; 4-way unrolled float `matvec`. Numbers are in [Performance](#-performance).
 
-**Phase 21 / 22:** see [Orchestration](#orchestration) and [HydroXL Vulkan execution](#hydroxl-vulkan-execution-phase-22). `docs/architecture.md` and parts of `docs/phase21-universal-orchestration.md` still describe the Vulkan adapter as a stub; Phase 22 replaced it (the source is authoritative).
+**Phase 21 / 22:** see [Orchestration](#-orchestration) and [HydroXL Vulkan execution](#-hydroxl-vulkan-execution-phase-22). `docs/architecture.md` and parts of `docs/phase21-universal-orchestration.md` still describe the Vulkan adapter as a stub; Phase 22 replaced it (the source is authoritative).
 
-## Quick start
+## 🚀 Quick start
 
 ### Prerequisites
 
@@ -223,7 +240,8 @@ Shaders in `shaders/`, compiled to SPIR-V at build time: `hydroxl_matvec.comp` (
 | **Vulkan SDK** (loader, headers, `glslangValidator` or `glslc`) | Vulkan detection, Vulkan compute, and compiling the `.comp` shaders. Without it the build succeeds with warnings, Vulkan is stubbed to "unavailable", and shaders are not compiled. A Vulkan-capable GPU driver is needed at runtime. |
 | A GGUF model | Anything beyond `hardware`/`devices`/`memory`. The documented test model is `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf`. Models are not in the repository (`*.gguf` is git-ignored). |
 
-**CUDA is not a build prerequisite and is not usable** in the current configuration: `GGML_CUDA` is forced `OFF`, and no CUDA toolkit is referenced by the build. NVIDIA GPUs can still be used through Vulkan, but that is untested.
+> [!NOTE]
+> **CUDA is not a build prerequisite and is not usable** in the current configuration: `GGML_CUDA` is forced `OFF`, and no CUDA toolkit is referenced by the build. NVIDIA GPUs can still be used through Vulkan, but that is untested.
 
 ### Build
 
@@ -250,7 +268,7 @@ $env:HETEROACCEL_MODEL_PATH = "C:\models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
 
 `llm`, `benchmark llm`, `run` and `chat` read this variable when `--model` is omitted. `hydroxl`, `analyze`, `plan`, `residency` and `graph` take the path as an argument and do not read it. The real-model tests read it too.
 
-## Usage
+## 💻 Usage
 
 All examples run from the repository root after a Release build.
 
@@ -265,7 +283,7 @@ $exe = ".\build\Release\adaptive-gpu.exe"
 & $exe benchmark vulkan            # CPU vs Vulkan vector-add benchmark
 ```
 
-### Analyze and plan a model (no inference)
+### 🔎 Analyze and plan a model (no inference)
 
 ```powershell
 $model = "C:\models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
@@ -277,7 +295,7 @@ $model = "C:\models\Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
 
 An `analyze`/`plan` result describes feasibility. It does not prove the model will execute correctly on a backend.
 
-### Inference through llama.cpp
+### 🦙 Inference through llama.cpp
 
 ```powershell
 # CPU only
@@ -294,15 +312,15 @@ An `analyze`/`plan` result describes feasibility. It does not prove the model wi
 & $exe chat --model $model            # type "exit" or "quit" to leave
 ```
 
-### Inference through HydroXL (native, CPU)
+### 🧠 Inference through HydroXL (native, CPU)
 
 ```powershell
 & $exe hydroxl --model $model --prompt "The capital of France is" --max-tokens 16 --temperature 0
 ```
 
-Flags: `--model/-m`, `--prompt/-p` (default `Hello, world!`), `--max-tokens/-n` (default 128), `--temperature/-t` (default 0.8). The sampling seed is fixed at 42. Output ends with token count, tok/s and backend name. Only `qwen2` GGUFs with the supported weight types load (see [limitations](#known-limitations)).
+Flags: `--model/-m`, `--prompt/-p` (default `Hello, world!`), `--max-tokens/-n` (default 128), `--temperature/-t` (default 0.8). The sampling seed is fixed at 42. Output ends with token count, tok/s and backend name. Only `qwen2` GGUFs with the supported weight types load (see [limitations](#-known-limitations)).
 
-### HydroXL on Vulkan through the orchestrator (C++ API)
+### 🔧 HydroXL on Vulkan through the orchestrator (C++ API)
 
 There is no CLI command for this path. The snippet mirrors `tests/test_p21_e2e_orchestration.cpp` and `tests/test_p22_vulkan_engine.cpp`; link against `agr_orchestration` (and its dependencies, as `tests/CMakeLists.txt` does).
 
@@ -348,11 +366,13 @@ int main() {
 
 To force a backend, set `req.forced_backend = "hydroxl_vulkan"` (or `"hydroxl_cpu"`). To see candidates and scores, call `orch.print_diagnostics(std::cout)`.
 
-## Performance
+## 📊 Performance
 
 Only numbers recorded in the repository's own reports are shown. Nothing here was re-measured for this README.
 
 ### Phase 22: CPU vs. Vulkan (HydroXL, single run)
+
+<img src="docs/assets/perf-cpu-vs-vulkan.svg" alt="Bar chart: HydroXL CPU 2.07 tok/s versus HydroXL Vulkan 5.20 tok/s" width="100%">
 
 | | |
 |---|---|
@@ -374,6 +394,8 @@ ctest --test-dir build -C Release -R test_p22_vulkan_engine -V
 
 ### Phase 20: HydroXL CPU before/after (same machine, 5 runs)
 
+<img src="docs/assets/phase20-before-after.svg" alt="Before and after charts for cold load, generation throughput, time to first token and peak RSS" width="100%">
+
 From [docs/phase20-improvements.md](docs/phase20-improvements.md), Release build, same model:
 
 | Metric | Before | After |
@@ -391,7 +413,7 @@ The Phase 22 CPU figure (2.07 tok/s) comes from a different test and a single ru
 
 `HardwareDetector::detect()` ≈ 1 ms; `select_backend()` < 50 µs; `create_engine()` + initialize ≈ 1,656 ms (model load dominates).
 
-## Testing
+## 🧪 Testing
 
 ```powershell
 # Full suite
@@ -416,7 +438,7 @@ ctest --test-dir build -C Release -R "test_p17|test_p19" --output-on-failure
 
 A full-suite result for the current commit, which includes the Phase 22 changes, is **not documented**.
 
-## Known limitations
+## ⚠️ Known limitations
 
 **Platform and hardware**
 - Only Windows/MSVC has been used. `PluginLoader.cpp` includes `<windows.h>` unconditionally and is linked into the default build, so Linux/macOS builds are unverified and likely fail as-is.
@@ -442,7 +464,7 @@ A full-suite result for the current commit, which includes the Phase 22 changes,
 - No `LICENSE` file is present in the repository at this commit.
 - `HeteroAccel-Research/` is a legacy prototype tree that is not part of the build; its README is outdated.
 
-## Repository layout
+## 🗂️ Repository layout
 
 ```text
 .
@@ -473,7 +495,9 @@ A full-suite result for the current commit, which includes the Phase 22 changes,
 
 The executable is named `adaptive-gpu` (the project's original name, `AdaptiveGPURuntime` in CMake).
 
-## Developer guide
+> The README images live in `docs/assets/` (`banner.svg`, `pipeline.svg`, `inference-paths.svg`, `perf-cpu-vs-vulkan.svg`, `phase20-before-after.svg`).
+
+## 🛠️ Developer guide
 
 ### Add an inference backend to the orchestrator
 
@@ -495,7 +519,7 @@ Implement `src/engine/IExecutionEngine.h` and register a factory with `Execution
 
 Implement the exports in `src/plugin/PluginAbis.h` (`pluginGetAbiVersion`, `pluginGetIdentity`, `pluginInitialize`, `pluginExecute`, `pluginShutdown`) following `test_plugin.cpp`. The host scans `AGR_PLUGIN_DIR` (default `./plugins` beside the executable). Only load plugins you trust.
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 | Symptom | Likely cause and fix |
 |---|---|
@@ -507,7 +531,7 @@ Implement the exports in `src/plugin/PluginAbis.h` (`pluginGetAbiVersion`, `plug
 | Orchestrator picks `hydroxl_vulkan` but initialization fails | Falls back to `hydroxl_cpu` when `allow_cpu_fallback` is true; the failure reason is returned in `error_out`/`SelectionResult`. |
 | Build errors in `PluginLoader.cpp` on Linux/macOS | Expected: the loader is Windows-only today. |
 
-## Contributing
+## 🤝 Contributing
 
 1. Build in Release and run the tests relevant to your change; note which tests skipped and why.
 2. Add or update tests with the change, and a reference-based check for numerical code.
@@ -515,8 +539,14 @@ Implement the exports in `src/plugin/PluginAbis.h` (`pluginGetAbiVersion`, `plug
 4. When reporting performance, include the hardware, model, quantization, backend, prompt, token counts, number of runs and the command used.
 5. Report security issues privately as described in [Security.md](Security.md).
 
-## Links
+## 🔗 Links
 
 - Repository: <https://github.com/Deep455-16/HeteroAccel>
 - Design notes: [docs/](docs/) · Architecture overview: [docs/architecture.md](docs/architecture.md)
 - Security policy: [Security.md](Security.md)
+
+<div align="center">
+
+<sub>HeteroAccel · detect · check · plan · fall back safely</sub>
+
+</div>
