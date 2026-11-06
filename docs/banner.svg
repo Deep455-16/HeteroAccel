@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="t d">
+  <title id="t">HeteroAccel</title>
+  <desc id="d">Hardware-aware inference runtime for local LLMs: detect, check, plan, fall back safely.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1026"/>
+      <stop offset="0.55" stop-color="#171a4a"/>
+      <stop offset="1" stop-color="#2a1458"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.05"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="320" rx="18" fill="url(#bg)"/>
+  <rect width="1200" height="320" rx="18" fill="url(#grid)"/>
+
+  <!-- left text -->
+  <text x="64" y="128" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="76" font-weight="800" fill="#ffffff">Hetero<tspan fill="url(#accent)">Accel</tspan></text>
+  <rect x="66" y="146" width="150" height="5" rx="2.5" fill="url(#accent)"/>
+  <text x="66" y="190" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="24" fill="#cbd5f5">A hardware-aware inference runtime for local LLMs</text>
+  <text x="66" y="224" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="19" fill="#94a3d8">Detect the machine · check what each backend can run · plan · fall back safely</text>
+
+  <!-- chips -->
+  <g font-family="Consolas, 'SF Mono', monospace" font-size="15" fill="#e2e8ff">
+    <rect x="66" y="252" width="82" height="32" rx="16" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text x="107" y="273" text-anchor="middle">C++17</text>
+    <rect x="158" y="252" width="118" height="32" rx="16" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text x="217" y="273" text-anchor="middle">CMake 3.20+</text>
+    <rect x="286" y="252" width="92" height="32" rx="16" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text x="332" y="273" text-anchor="middle">Vulkan</text>
+    <rect x="388" y="252" width="106" height="32" rx="16" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text x="441" y="273" text-anchor="middle">HydroXL</text>
+    <rect x="504" y="252" width="110" height="32" rx="16" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.18"/>
+    <text x="559" y="273" text-anchor="middle">llama.cpp</text>
+  </g>
+
+  <!-- right illustration: CPU / GPU nodes -->
+  <g transform="translate(860,60)" stroke-linecap="round">
+    <g stroke="url(#accent)" stroke-width="3" fill="none" opacity="0.9">
+      <path d="M130 120 L50 50"/><path d="M130 120 L230 40"/>
+      <path d="M130 120 L40 190"/><path d="M130 120 L240 180"/>
+      <path d="M50 50 L230 40" stroke-opacity="0.35"/>
+      <path d="M40 190 L240 180" stroke-opacity="0.35"/>
+    </g>
+    <!-- core -->
+    <rect x="92" y="82" width="76" height="76" rx="14" fill="#0b1026" stroke="url(#accent)" stroke-width="3"/>
+    <text x="130" y="116" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700" fill="#e2e8ff">RUNTIME</text>
+    <text x="130" y="136" text-anchor="middle" font-family="Consolas, monospace" font-size="12" fill="#94a3d8">plan</text>
+    <!-- nodes -->
+    <g font-family="Segoe UI, system-ui, sans-serif" font-size="13" font-weight="700" text-anchor="middle" fill="#e2e8ff">
+      <rect x="14" y="26" width="72" height="48" rx="10" fill="#1e2a6b" stroke="#38bdf8"/><text x="50" y="55">CPU</text>
+      <rect x="196" y="16" width="72" height="48" rx="10" fill="#2b1d6b" stroke="#a78bfa"/><text x="232" y="45">Vulkan</text>
+      <rect x="4" y="166" width="72" height="48" rx="10" fill="#1e2a6b" stroke="#38bdf8"/><text x="40" y="195">HydroXL</text>
+      <rect x="204" y="156" width="72" height="48" rx="10" fill="#2b1d6b" stroke="#a78bfa"/><text x="240" y="185">llama.cpp</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="360" viewBox="0 0 1000 360" role="img" aria-labelledby="t d">
+  <title id="t">HydroXL CPU vs Vulkan throughput, single run</title>
+  <desc id="d">HydroXL CPU 2.07 tokens per second; HydroXL Vulkan 5.20 tokens per second. Intel Iris Xe, Qwen2.5-0.5B-Instruct Q4_K_M, 8 new tokens, greedy, one run.</desc>
+  <defs>
+    <linearGradient id="cpu" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#60a5fa"/></linearGradient>
+    <linearGradient id="vk" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#c084fc"/></linearGradient>
+  </defs>
+  <rect width="1000" height="360" rx="16" fill="#0f172a"/>
+  <g font-family="Segoe UI, system-ui, -apple-system, sans-serif">
+    <text x="36" y="46" font-size="22" font-weight="800" fill="#fff">Phase 22 · HydroXL CPU vs Vulkan</text>
+    <text x="36" y="72" font-size="14" fill="#94a3d8">tokens per second · higher is better · single run, no variance reported</text>
+
+    <!-- scale: 120 px per tok/s, origin x=230 -->
+    <g stroke="#1e293b">
+      <line x1="350" y1="100" x2="350" y2="250"/><line x1="470" y1="100" x2="470" y2="250"/><line x1="590" y1="100" x2="590" y2="250"/>
+      <line x1="710" y1="100" x2="710" y2="250"/><line x1="830" y1="100" x2="830" y2="250"/><line x1="950" y1="100" x2="950" y2="250"/>
+    </g>
+    <line x1="230" y1="100" x2="230" y2="250" stroke="#475569"/>
+    <g font-size="12" fill="#64748b" text-anchor="middle">
+      <text x="230" y="270">0</text><text x="350" y="270">1</text><text x="470" y="270">2</text><text x="590" y="270">3</text>
+      <text x="710" y="270">4</text><text x="830" y="270">5</text><text x="950" y="270">6</text>
+    </g>
+
+    <text x="216" y="146" font-size="17" font-weight="700" fill="#e2e8ff" text-anchor="end">HydroXL CPU</text>
+    <rect x="230" y="120" width="248.4" height="40" rx="8" fill="url(#cpu)"/>
+    <text x="490" y="148" font-size="20" font-weight="800" fill="#7dd3fc">2.07</text>
+
+    <text x="216" y="216" font-size="17" font-weight="700" fill="#e2e8ff" text-anchor="end">HydroXL Vulkan</text>
+    <rect x="230" y="190" width="624" height="40" rx="8" fill="url(#vk)"/>
+    <text x="866" y="218" font-size="20" font-weight="800" fill="#d8b4fe">5.20</text>
+
+    <text x="36" y="312" font-size="13" fill="#94a3d8">Intel Core i5-1235U · Intel Iris Xe (unified memory) · 16 GB RAM · Qwen2.5-0.5B-Instruct Q4_K_M</text>
+    <text x="36" y="334" font-size="13" fill="#94a3d8">test_p22_vulkan_engine · 8 new tokens · greedy · prompt "The capital of France is" · outputs token-identical</text>
+  </g>
+</svg>

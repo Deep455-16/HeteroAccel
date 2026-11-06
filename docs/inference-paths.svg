@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="t">
+  <title id="t">Two inference paths: llama.cpp and HydroXL</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#a5b4fc"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="340" rx="16" fill="#0f172a"/>
+  <g font-family="Segoe UI, system-ui, -apple-system, sans-serif">
+    <text x="36" y="48" font-size="20" font-weight="800" fill="#38bdf8">PATH 1 · llama.cpp</text>
+    <text x="250" y="48" font-size="14" fill="#94a3d8">llm · run · chat · benchmark llm</text>
+
+    <g text-anchor="middle" font-size="16" font-weight="700" fill="#fff">
+      <rect x="36" y="68" width="250" height="64" rx="12" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/><text x="161" y="107">HeteroRuntime</text>
+      <rect x="340" y="68" width="250" height="64" rx="12" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/><text x="465" y="107">LlamaCppBackend</text>
+      <rect x="644" y="68" width="250" height="64" rx="12" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/><text x="769" y="107">llama.cpp</text>
+    </g>
+    <text x="920" y="106" font-size="14" fill="#94a3d8">Vulkan ON · CUDA OFF</text>
+    <text x="920" y="126" font-size="13" fill="#94a3d8">pinned to tag b9999</text>
+
+    <line x1="36" y1="168" x2="1164" y2="168" stroke="#334155" stroke-dasharray="6 6"/>
+
+    <text x="36" y="206" font-size="20" font-weight="800" fill="#a78bfa">PATH 2 · HydroXL (native)</text>
+    <text x="300" y="206" font-size="14" fill="#94a3d8">no llama.cpp for execution</text>
+
+    <g text-anchor="middle" font-size="15" font-weight="700" fill="#fff">
+      <rect x="36" y="226" width="150" height="64" rx="12" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/><text x="111" y="263">GGUF</text>
+      <rect x="226" y="226" width="190" height="64" rx="12" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/><text x="321" y="263">Native loader</text>
+      <rect x="456" y="226" width="250" height="64" rx="12" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/><text x="581" y="256">Dequantize all weights</text><text x="581" y="276" font-size="13" font-weight="400" fill="#94a3d8">to float32 at load time</text>
+      <rect x="746" y="226" width="200" height="64" rx="12" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/><text x="846" y="263">Forward pass</text>
+    </g>
+    <g font-size="13" fill="#e2e8ff">
+      <rect x="976" y="222" width="188" height="30" rx="8" fill="#1e2a6b" stroke="#38bdf8"/>
+      <text x="1070" y="242" text-anchor="middle">CPU: HydroXLEngine / adapter</text>
+      <rect x="976" y="262" width="188" height="30" rx="8" fill="#2b1d6b" stroke="#a78bfa"/>
+      <text x="1070" y="282" text-anchor="middle">Vulkan hybrid: adapter</text>
+    </g>
+  </g>
+  <g stroke="#a5b4fc" stroke-width="2.5" marker-end="url(#arr)">
+    <path d="M288 100H336"/><path d="M592 100H640"/>
+    <path d="M188 258H222"/><path d="M418 258H452"/><path d="M708 258H742"/><path d="M948 258H972"/>
+  </g>
+</svg>
