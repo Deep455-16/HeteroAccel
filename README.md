@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.svg" alt="HeteroAccel: a hardware-aware inference runtime for local LLMs" width="100%">
+<img src="docs/banner.svg" alt="HeteroAccel: a hardware-aware inference runtime for local LLMs" width="100%">
 
 <br>
 
@@ -18,7 +18,7 @@
 
 HeteroAccel is the runtime layer *around* inference engines. It inspects CPU, memory, Vulkan and CUDA capabilities, analyzes a GGUF model's requirements, plans residency and placement, schedules work, and drives either an external engine (llama.cpp) or its own native engine (**HydroXL**).
 
-<img src="docs/assets/pipeline.svg" alt="Pipeline: detect, check, plan, execute, fall back safely" width="100%">
+<img src="docs/pipeline.svg" alt="Pipeline: detect, check, plan, execute, fall back safely" width="100%">
 
 > [!IMPORTANT]
 > **Read this first.** Everything below is derived from the source tree at the latest commit. Results were measured on **one machine** (Intel Core i5-1235U, Intel Iris Xe, 16 GB RAM, Windows). CUDA has never been run and is **not enabled in the current build**. See [Status at a glance](#-status-at-a-glance) and [Known limitations](#-known-limitations).
@@ -118,7 +118,7 @@ Solid lines are wired in code. The orchestrator is not reached from the CLI toda
 
 ### 🔀 Two inference paths
 
-<img src="docs/assets/inference-paths.svg" alt="Two inference paths: llama.cpp and HydroXL" width="100%">
+<img src="docs/inference-paths.svg" alt="Two inference paths: llama.cpp and HydroXL" width="100%">
 
 1. **llama.cpp path** (`llm`, `run`, `chat`, `benchmark llm`): `HeteroRuntime` → `LlamaCppBackend` → llama.cpp. llama.cpp is built with Vulkan on and CUDA off.
 2. **HydroXL path**: GGUF → native loader → dequantize every weight to float32 at load time → native forward pass.
@@ -372,7 +372,7 @@ Only numbers recorded in the repository's own reports are shown. Nothing here wa
 
 ### Phase 22: CPU vs. Vulkan (HydroXL, single run)
 
-<img src="docs/assets/perf-cpu-vs-vulkan.svg" alt="Bar chart: HydroXL CPU 2.07 tok/s versus HydroXL Vulkan 5.20 tok/s" width="100%">
+<img src="docs/perf-cpu-vs-vulkan.svg" alt="Bar chart: HydroXL CPU 2.07 tok/s versus HydroXL Vulkan 5.20 tok/s" width="100%">
 
 | | |
 |---|---|
@@ -394,7 +394,7 @@ ctest --test-dir build -C Release -R test_p22_vulkan_engine -V
 
 ### Phase 20: HydroXL CPU before/after (same machine, 5 runs)
 
-<img src="docs/assets/phase20-before-after.svg" alt="Before and after charts for cold load, generation throughput, time to first token and peak RSS" width="100%">
+<img src="docs/phase20-before-after.svg" alt="Before and after charts for cold load, generation throughput, time to first token and peak RSS" width="100%">
 
 From [docs/phase20-improvements.md](docs/phase20-improvements.md), Release build, same model:
 
@@ -495,7 +495,7 @@ A full-suite result for the current commit, which includes the Phase 22 changes,
 
 The executable is named `adaptive-gpu` (the project's original name, `AdaptiveGPURuntime` in CMake).
 
-> The README images live in `docs/assets/` (`banner.svg`, `pipeline.svg`, `inference-paths.svg`, `perf-cpu-vs-vulkan.svg`, `phase20-before-after.svg`).
+> The README images live in `docs/` (`banner.svg`, `pipeline.svg`, `inference-paths.svg`, `perf-cpu-vs-vulkan.svg`, `phase20-before-after.svg`).
 
 ## 🛠️ Developer guide
 
