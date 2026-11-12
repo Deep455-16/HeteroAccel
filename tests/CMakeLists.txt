@@ -351,3 +351,6 @@ set_tests_properties(
     PROPERTIES
         TIMEOUT 180
 )
+
+# Phase 28 - Cross-platform & hardware validation
+agr_add_test(test_p28_portability test_p28_portability.cpp)

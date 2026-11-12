@@ -32,6 +32,7 @@ struct DeviceInfo {
     int vulkan_queue_count = 0;
     std::string vulkan_device_name;
     std::string driver_version;
+    bool is_software_emulated = false;  // CPU-based Vulkan (llvmpipe etc.); not a physical GPU
 
     // CUDA details (Phase 26); populated only for devices CUDA can enumerate.
     int cuda_device_index = -1;      // index in the CUDA driver's device list

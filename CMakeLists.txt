@@ -17,18 +17,28 @@ endif()
 # --- Vulkan (Phase 1 detection + Phase 2 real compute) --------------------
 # The Vulkan SDK/loader is expected to be installed on the system.
 # SDKs are never bundled into the repository.
-find_package(Vulkan)
+option(HETEROACCEL_ENABLE_VULKAN "Use Vulkan (requires Vulkan SDK/loader); OFF gives a CPU-only build" ON)
+if(HETEROACCEL_ENABLE_VULKAN)
+    find_package(Vulkan)
+else()
+    set(Vulkan_FOUND FALSE)
+endif()
+if(Vulkan_FOUND)
+    set(AGR_USE_VULKAN ON)
+else()
+    set(AGR_USE_VULKAN OFF)
+endif()
 
 # --- Phase 2: compile compute shaders from source at build time -----------
 find_program(GLSLANG_VALIDATOR
     NAMES glslangValidator
-    HINTS "D:/VulkanSDK/1.4.357.0/Bin"
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" "D:/VulkanSDK/1.4.357.0/Bin"
 )
 
 if(NOT GLSLANG_VALIDATOR)
     find_program(GLSLC
         NAMES glslc
-        HINTS "D:/VulkanSDK/1.4.357.0/Bin"
+        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" "D:/VulkanSDK/1.4.357.0/Bin"
     )
 endif()
 
@@ -125,7 +135,7 @@ else()
     message(STATUS "CUDA inference disabled (configure with -DHETEROACCEL_ENABLE_CUDA=ON to enable)")
 endif()
 
-set(GGML_VULKAN          ON  CACHE BOOL "Enable Vulkan backend in ggml/llama.cpp" FORCE)
+set(GGML_VULKAN          ${AGR_USE_VULKAN} CACHE BOOL "Enable Vulkan backend in ggml/llama.cpp" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)

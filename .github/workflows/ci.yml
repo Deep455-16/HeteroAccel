@@ -1,0 +1,132 @@
+name: HeteroAccel CI Matrix
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CPU-only: no GPU SDK required. Proves missing optional SDKs never break the
+  # build (HETEROACCEL_ENABLE_VULKAN=OFF, HETEROACCEL_ENABLE_CUDA=OFF).
+  # ---------------------------------------------------------------------------
+  cpu-only:
+    name: CPU-only (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DHETEROACCEL_ENABLE_VULKAN=OFF -DHETEROACCEL_ENABLE_CUDA=OFF
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure --parallel 2
+
+  # ---------------------------------------------------------------------------
+  # Vulkan-enabled builds. Hosted runners have NO physical GPU: Vulkan here is
+  # software (llvmpipe/lavapipe), which validates build + correctness only and is
+  # NEVER evidence of GPU performance. HardwareDetector flags such devices as
+  # is_software_emulated and refuses to count them as accelerators.
+  # ---------------------------------------------------------------------------
+  vulkan-linux:
+    name: Vulkan build (Ubuntu, software ICD)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build libvulkan-dev \
+            mesa-vulkan-drivers vulkan-tools glslc glslang-tools spirv-headers libshaderc-dev
+      - name: Vulkan runtime (informational)
+        run: vulkaninfo --summary || true
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DHETEROACCEL_ENABLE_VULKAN=ON
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 2
+
+  vulkan-windows:
+    name: Vulkan build (Windows)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          choco install vulkan-sdk -y --no-progress
+          $sdk = (Get-ChildItem 'C:\VulkanSDK' | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$sdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Configure
+        run: cmake -B build -DHETEROACCEL_ENABLE_VULKAN=ON
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure --parallel 2
+
+  # ---------------------------------------------------------------------------
+  # CUDA compilation (no GPU needed to compile). Runtime tests are exercised in
+  # the self-hosted GPU job below; here CUDA hardware tests skip (exit 77).
+  # ---------------------------------------------------------------------------
+  cuda-compile:
+    name: CUDA compile (Ubuntu, nvcc)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.4.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas-dev", "cublas"]'
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DHETEROACCEL_ENABLE_VULKAN=OFF -DHETEROACCEL_ENABLE_CUDA=ON
+          -DHETEROACCEL_CUDA_ARCHITECTURES="75;86;89"
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test (hardware tests skip without a GPU)
+        run: ctest --test-dir build --output-on-failure --parallel 2
+
+  # ---------------------------------------------------------------------------
+  # OPTIONAL: real NVIDIA GPU validation on a self-hosted runner. Requires a
+  # runner registered with labels [self-hosted, linux, gpu, nvidia]. Skipped
+  # automatically when the repo variable HAS_NVIDIA_RUNNER != 'true'.
+  # Only a green run of THIS job constitutes CUDA hardware validation.
+  # ---------------------------------------------------------------------------
+  cuda-gpu:
+    name: CUDA hardware validation (NVIDIA self-hosted)
+    if: ${{ vars.HAS_NVIDIA_RUNNER == 'true' }}
+    runs-on: [self-hosted, linux, gpu, nvidia]
+    steps:
+      - uses: actions/checkout@v4
+      - name: GPU info
+        run: nvidia-smi
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DHETEROACCEL_ENABLE_CUDA=ON
+      - name: Build
+        run: cmake --build build --parallel 8
+      - name: Run CUDA tests (a skip is a failure here)
+        run: |
+          ctest --test-dir build -R "test_p26_" --output-on-failure --no-tests=error \
+            | tee cuda_ctest.log
+          if grep -q "Skipped" cuda_ctest.log; then echo "CUDA tests were skipped on a GPU runner"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cuda-hardware-validation
+          path: cuda_ctest.log

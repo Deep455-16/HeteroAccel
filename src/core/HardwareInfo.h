@@ -74,7 +74,25 @@ struct VulkanDeviceInfo {
     uint64_t host_visible_memory_mb = 0;
     std::vector<VulkanQueueFamilyInfo> queue_families;
     bool has_compute_capable_queue = false;
+    // True for CPU-based Vulkan implementations (llvmpipe, lavapipe, SwiftShader, ...).
+    // These must never be treated as evidence of physical GPU acceleration.
+    bool is_software_emulated = false;
 };
+
+// Classifies a Vulkan device as a software rasterizer from its type string
+// ("CPU") and/or driver-reported name. Pure function, unit-testable.
+inline bool isSoftwareVulkanDevice(const std::string& device_type, const std::string& name) {
+    if (device_type == "CPU") return true;
+    std::string lower;
+    lower.reserve(name.size());
+    for (char c : name) lower.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c));
+    static const char* const kMarkers[] = {"llvmpipe", "lavapipe", "swiftshader", "softpipe",
+                                           "software rasterizer", "microsoft basic render"};
+    for (const char* m : kMarkers) {
+        if (lower.find(m) != std::string::npos) return true;
+    }
+    return false;
+}
 
 struct VulkanInfo {
     bool available = false;

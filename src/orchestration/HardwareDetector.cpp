@@ -78,16 +78,21 @@ void HardwareDetector::detect() {
 
     // 3. Detect Vulkan GPUs
     auto vk_info = VulkanDetector::detect();
-    if (vk_info.available && !vk_info.devices.empty()) {
+    if (!vk_info.devices.empty()) {
         for (const auto& dev : vk_info.devices) {
             DeviceInfo gpu_dev;
             gpu_dev.name = dev.name;
             gpu_dev.vulkan_device_name = dev.name;
+            gpu_dev.is_software_emulated = dev.is_software_emulated;
             gpu_dev.vendor = detectVendorFromIdOrName(dev.vendor_id, dev.name);
-            gpu_dev.api_support = static_cast<uint32_t>(DeviceInfo::APISupport::Vulkan);
+            // Software rasterizers are listed for transparency but never advertised
+            // as Vulkan-accelerated devices.
+            gpu_dev.api_support = dev.is_software_emulated
+                ? static_cast<uint32_t>(DeviceInfo::APISupport::None)
+                : static_cast<uint32_t>(DeviceInfo::APISupport::Vulkan);
             gpu_dev.vram_bytes = static_cast<size_t>(dev.device_local_memory_mb) * 1024ULL * 1024ULL;
             gpu_dev.system_ram_bytes = total_system_ram_;
-            gpu_dev.vulkan_ok = dev.has_compute_capable_queue;
+            gpu_dev.vulkan_ok = dev.has_compute_capable_queue && !dev.is_software_emulated;
             gpu_dev.cuda_ok = false;
 
             int total_queues = 0;
@@ -233,7 +238,7 @@ const DeviceInfo* HardwareDetector::best_gpu() const {
     size_t max_vram = 0;
 
     for (const auto& dev : devices_) {
-        // Must be a GPU (has Vulkan or CUDA support or vram > 0)
+        if (dev.is_software_emulated) continue;  // never a "best GPU"
         bool is_gpu = (dev.api_support & static_cast<uint32_t>(DeviceInfo::APISupport::Vulkan)) ||
                       (dev.api_support & static_cast<uint32_t>(DeviceInfo::APISupport::CUDA)) ||
                       dev.vulkan_ok || dev.cuda_ok || (dev.vram_bytes > 0);
@@ -270,7 +275,8 @@ void HardwareDetector::print_summary(std::ostream& out) const {
 
     for (size_t i = 0; i < devices_.size(); ++i) {
         const auto& d = devices_[i];
-        out << " [" << i << "] Device: " << d.name << "\n";
+        out << " [" << i << "] Device: " << d.name
+            << (d.is_software_emulated ? "  (SOFTWARE-EMULATED Vulkan; not a physical GPU)" : "") << "\n";
         out << "     Vendor:       " << vendorToString(d.vendor) << "\n";
         out << "     APIs:        ";
         if (d.api_support & static_cast<uint32_t>(DeviceInfo::APISupport::CPU)) out << " CPU";

@@ -15,6 +15,10 @@
     #include <string>
     #include <thread>
     #include <unistd.h>
+    #if defined(__APPLE__)
+        #include <sys/sysctl.h>
+        #include <sys/types.h>
+    #endif
 #endif
 
 namespace agr {
@@ -99,7 +103,7 @@ uint32_t countPhysicalCoresWindows() {
     return physicalCores;
 }
 
-#else // Linux / other POSIX (dev-time fallback, not the Phase-1 target platform)
+#elif !defined(__APPLE__) // Linux / other POSIX
 
 struct ProcCpuInfo {
     std::string vendor;
@@ -171,6 +175,29 @@ CPUInfo CPUDetector::detect() {
         // Graceful degradation: could not resolve physical topology.
         info.physical_cores = info.logical_processors;
     }
+#elif defined(__APPLE__)
+    auto sysctlStr = [](const char* name) {
+        size_t len = 0;
+        if (sysctlbyname(name, nullptr, &len, nullptr, 0) != 0 || len == 0) return std::string();
+        std::string s(len, '\0');
+        if (sysctlbyname(name, &s[0], &len, nullptr, 0) != 0) return std::string();
+        if (!s.empty() && s.back() == '\0') s.pop_back();
+        return s;
+    };
+    auto sysctlInt = [](const char* name) {
+        int v = 0;
+        size_t len = sizeof(v);
+        if (sysctlbyname(name, &v, &len, nullptr, 0) != 0 || v < 0) return 0;
+        return v;
+    };
+    std::string vendor = sysctlStr("machdep.cpu.vendor");
+    if (vendor.empty()) vendor = "Apple";
+    info.vendor = vendor;
+    std::string brand = sysctlStr("machdep.cpu.brand_string");
+    info.model_name = brand.empty() ? "Unknown CPU" : brand;
+    info.logical_processors = static_cast<uint32_t>(sysctlInt("hw.logicalcpu"));
+    info.physical_cores = static_cast<uint32_t>(sysctlInt("hw.physicalcpu"));
+    if (info.physical_cores == 0) info.physical_cores = info.logical_processors;
 #else
     ProcCpuInfo proc = readProcCpuInfo();
     info.vendor = proc.vendor.empty() ? "Unknown" : proc.vendor;

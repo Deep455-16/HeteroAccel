@@ -4,6 +4,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "orchestration/MemoryEstimator.h"
 #include "orchestration/HardwareDetector.h"
+#include "hardware/MemoryDetector.h"
 
 #include <sstream>
 #include <algorithm>
@@ -107,7 +108,9 @@ size_t MemoryEstimator::available_ram_bytes() {
         return static_cast<size_t>(memInfo.ullAvailPhys);
     }
 #endif
-    return 16ULL * 1024 * 1024 * 1024;
+    // Portable path (Linux/macOS, or Windows API failure): real OS query, never a made-up value.
+    // 0 means "unknown" and callers fall back to HardwareDetector.
+    return static_cast<size_t>(MemoryDetector::detect().available_physical_mb) * 1024ULL * 1024ULL;
 }
 
 bool MemoryEstimator::fits_in_memory(const ModelMemoryEstimate& est,

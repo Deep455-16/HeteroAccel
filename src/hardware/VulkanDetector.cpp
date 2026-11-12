@@ -96,6 +96,7 @@ VulkanInfo VulkanDetector::detect() {
         devInfo.api_version_minor = VK_API_VERSION_MINOR(props.apiVersion);
         devInfo.api_version_patch = VK_API_VERSION_PATCH(props.apiVersion);
         devInfo.driver_version_raw = props.driverVersion;
+        devInfo.is_software_emulated = isSoftwareVulkanDevice(devInfo.device_type, devInfo.name);
 
         // Memory properties: sum device-local heaps and host-visible heaps.
         VkPhysicalDeviceMemoryProperties memProps;
@@ -151,13 +152,18 @@ VulkanInfo VulkanDetector::detect() {
     // "Available" means: instance created AND at least one device AND at
     // least one device with a usable compute queue.
     bool anyComputeCapable = false;
+    bool anySoftwareOnlyCompute = false;
     for (const auto& d : info.devices) {
-        if (d.has_compute_capable_queue) { anyComputeCapable = true; break; }
+        if (!d.has_compute_capable_queue) continue;
+        if (d.is_software_emulated) { anySoftwareOnlyCompute = true; continue; }
+        anyComputeCapable = true;
     }
 
     if (!anyComputeCapable) {
         info.available = false;
-        info.unavailable_reason = "Vulkan devices were enumerated, but none exposed a compute-capable queue family";
+        info.unavailable_reason = anySoftwareOnlyCompute
+            ? "Only software-emulated Vulkan devices (llvmpipe/lavapipe/SwiftShader) were found; no physical GPU"
+            : "Vulkan devices were enumerated, but none exposed a compute-capable queue family";
     } else {
         info.available = true;
     }
