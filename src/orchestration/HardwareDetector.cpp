@@ -56,6 +56,7 @@ void HardwareDetector::detect() {
 
     devices_.clear();
     has_vulkan_ = false;
+    has_physical_vulkan_gpu_ = false;
     has_cuda_ = false;
 
     // 1. Detect System RAM
@@ -85,14 +86,12 @@ void HardwareDetector::detect() {
             gpu_dev.vulkan_device_name = dev.name;
             gpu_dev.is_software_emulated = dev.is_software_emulated;
             gpu_dev.vendor = detectVendorFromIdOrName(dev.vendor_id, dev.name);
-            // Software rasterizers are listed for transparency but never advertised
-            // as Vulkan-accelerated devices.
-            gpu_dev.api_support = dev.is_software_emulated
-                ? static_cast<uint32_t>(DeviceInfo::APISupport::None)
-                : static_cast<uint32_t>(DeviceInfo::APISupport::Vulkan);
+            gpu_dev.api_support = dev.has_compute_capable_queue
+                ? static_cast<uint32_t>(DeviceInfo::APISupport::Vulkan)
+                : static_cast<uint32_t>(DeviceInfo::APISupport::None);
             gpu_dev.vram_bytes = static_cast<size_t>(dev.device_local_memory_mb) * 1024ULL * 1024ULL;
             gpu_dev.system_ram_bytes = total_system_ram_;
-            gpu_dev.vulkan_ok = dev.has_compute_capable_queue && !dev.is_software_emulated;
+            gpu_dev.vulkan_ok = dev.has_compute_capable_queue;
             gpu_dev.cuda_ok = false;
 
             int total_queues = 0;
@@ -110,6 +109,9 @@ void HardwareDetector::detect() {
 
             if (gpu_dev.vulkan_ok) {
                 has_vulkan_ = true;
+                if (!dev.is_software_emulated) {
+                    has_physical_vulkan_gpu_ = true;
+                }
             }
             devices_.push_back(gpu_dev);
         }
@@ -237,19 +239,31 @@ const DeviceInfo* HardwareDetector::best_gpu() const {
     const DeviceInfo* best = nullptr;
     size_t max_vram = 0;
 
+    // 1. Prefer physical GPUs (!is_software_emulated)
     for (const auto& dev : devices_) {
-        if (dev.is_software_emulated) continue;  // never a "best GPU"
+        if (dev.is_software_emulated) continue;
         bool is_gpu = (dev.api_support & static_cast<uint32_t>(DeviceInfo::APISupport::Vulkan)) ||
                       (dev.api_support & static_cast<uint32_t>(DeviceInfo::APISupport::CUDA)) ||
                       dev.vulkan_ok || dev.cuda_ok || (dev.vram_bytes > 0);
 
-        // Don't treat pure CPU device as GPU
         if (dev.api_support == static_cast<uint32_t>(DeviceInfo::APISupport::CPU)) {
             continue;
         }
 
         if (is_gpu) {
             if (!best || dev.vram_bytes > max_vram) {
+                best = &dev;
+                max_vram = dev.vram_bytes;
+            }
+        }
+    }
+
+    // 2. If only software Vulkan compute (e.g. llvmpipe in CI) is present and
+    //    explicitly marked vulkan_ok, allow returning it as the active Vulkan
+    //    device while keeping is_software_emulated == true.
+    if (!best && has_vulkan_) {
+        for (const auto& dev : devices_) {
+            if (dev.vulkan_ok && (!best || dev.vram_bytes > max_vram)) {
                 best = &dev;
                 max_vram = dev.vram_bytes;
             }
@@ -316,6 +330,7 @@ void HardwareDetector::reset() {
     total_system_ram_ = 0;
     mock_avail_ram_ = 0;
     has_vulkan_ = false;
+    has_physical_vulkan_gpu_ = false;
     has_cuda_ = false;
     cuda_reason_.clear();
 }
@@ -330,6 +345,12 @@ void HardwareDetector::set_mock_environment(const std::vector<DeviceInfo>& mock_
     mock_avail_ram_ = mock_avail_ram;
     total_system_ram_ = mock_avail_ram;
     has_vulkan_ = mock_has_vulkan;
+    has_physical_vulkan_gpu_ = false;
+    for (const auto& d : mock_devices) {
+        if (d.vulkan_ok && !d.is_software_emulated) {
+            has_physical_vulkan_gpu_ = true;
+        }
+    }
     has_cuda_ = mock_has_cuda;
 }
 

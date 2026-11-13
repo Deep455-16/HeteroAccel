@@ -26,16 +26,16 @@ int main() {
 
     if (!HardwareDetector::cuda_inference_compiled()) {
         std::cout << "  SKIP (PENDING): built without HETEROACCEL_ENABLE_CUDA\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     if (!hw.has_cuda()) {
         std::cout << "  SKIP (PENDING): no usable CUDA device: " << hw.cuda_unavailable_reason() << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     const char* env = std::getenv("HETEROACCEL_MODEL_PATH");
     if (!env || !std::filesystem::exists(env)) {
         std::cout << "  SKIP (PENDING): HETEROACCEL_MODEL_PATH not set or file missing\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     auto cfgFor = [&](const char* pref) {

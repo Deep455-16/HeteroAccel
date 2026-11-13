@@ -20,7 +20,6 @@
 
 #include <vector>
 
-constexpr int kSkipReturnCode = 77;
 constexpr int N_ITERS = 8;      // enough iterations to expose pool exhaustion
 constexpr size_t N_ELEMS = 4096;
 
@@ -32,7 +31,7 @@ int main() {
     if (!backend.initialize()) {
         std::cout << "  SKIPPED: no usable Vulkan compute device ("
                   << backend.lastError() << ")\n";
-        return kSkipReturnCode;
+        AGR_TEST_MAIN_END();
     }
     std::cout << "  GPU device: " << backend.deviceName() << "\n";
 

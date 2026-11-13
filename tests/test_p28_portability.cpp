@@ -54,36 +54,38 @@ int main() {
     AGR_CHECK(mem.available_physical_mb <= mem.total_physical_mb);
 
     VulkanInfo vk = VulkanDetector::detect();
-    std::cout << "  Vulkan available(physical)=" << vk.available << " devices=" << vk.devices.size() << "\n";
+    std::cout << "  Vulkan available=" << vk.available
+              << " physical=" << vk.has_physical_gpu
+              << " devices=" << vk.devices.size() << "\n";
+    bool any_compute = false;
+    bool any_physical_compute = false;
     for (const auto& d : vk.devices) {
         std::cout << "    - " << d.name << " [" << d.device_type << "]"
                   << (d.is_software_emulated ? " SOFTWARE" : " physical") << "\n";
         AGR_CHECK(d.is_software_emulated == isSoftwareVulkanDevice(d.device_type, d.name));
+        if (d.has_compute_capable_queue) {
+            any_compute = true;
+            if (!d.is_software_emulated) any_physical_compute = true;
+        }
     }
-    if (vk.available) {
-        bool has_physical = false;
-        for (const auto& d : vk.devices)
-            if (!d.is_software_emulated && d.has_compute_capable_queue) has_physical = true;
-        AGR_CHECK(has_physical);   // available must imply a physical compute GPU
-    } else {
+    AGR_CHECK(vk.available == any_compute);
+    AGR_CHECK(vk.has_physical_gpu == any_physical_compute);
+    if (!vk.available) {
         AGR_CHECK(!vk.unavailable_reason.empty());
     }
 
     CUDAInfo cu = CUDADetector::detect(false);
     if (!cu.available) AGR_CHECK(!cu.unavailable_reason.empty());
 
-    // The detector must agree with the raw Vulkan probe about physical availability.
+    // The detector must agree with the raw Vulkan probe about both compute and physical availability.
     auto& hw = HardwareDetector::instance();
     hw.reset();
     hw.detect();
     AGR_CHECK(hw.has_vulkan() == vk.available);
-    for (const auto& d : hw.devices()) {
-        if (d.is_software_emulated) {
-            AGR_CHECK(!d.vulkan_ok);
-            AGR_CHECK(!(d.api_support & (uint32_t)DeviceInfo::APISupport::Vulkan));
-        }
+    AGR_CHECK(hw.has_physical_vulkan_gpu() == vk.has_physical_gpu);
+    if (hw.has_physical_vulkan_gpu()) {
+        if (const auto* best = hw.best_gpu()) AGR_CHECK(!best->is_software_emulated);
     }
-    if (const auto* best = hw.best_gpu()) AGR_CHECK(!best->is_software_emulated);
 
     // ---- 3. Dynamic library loading ---------------------------------------
     {

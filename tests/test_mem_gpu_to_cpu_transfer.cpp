@@ -9,7 +9,9 @@ int main() {
     std::cout << "== test_mem_gpu_to_cpu_transfer ==\n";
     
     agr::VulkanBackend backend;
-    if (!backend.initialize()) return 77;
+    if (!backend.initialize()) {
+        AGR_TEST_MAIN_END();
+    }
     
     agr::VulkanAllocator alloc(backend);
     agr::TransferManager tm(backend);

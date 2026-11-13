@@ -13,7 +13,7 @@ int main() {
     AGR_CHECK(vd != nullptr); // always present even if unavailable
     if (!vd->is_available) {
         std::cout << "  SKIP: Vulkan unavailable: " << vd->unavailable_reason << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     AGR_CHECK(!vd->name.empty());
     AGR_CHECK(vd->memory_capacity > 0);

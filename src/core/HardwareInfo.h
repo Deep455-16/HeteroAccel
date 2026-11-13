@@ -96,6 +96,7 @@ inline bool isSoftwareVulkanDevice(const std::string& device_type, const std::st
 
 struct VulkanInfo {
     bool available = false;
+    bool has_physical_gpu = false;  // true only when a non-software physical GPU has a compute queue
     std::string unavailable_reason; // populated when available == false
     uint32_t instance_api_version_major = 0;
     uint32_t instance_api_version_minor = 0;

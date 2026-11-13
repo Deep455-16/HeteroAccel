@@ -86,20 +86,24 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
-        with:
-          cuda: "12.4.1"
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas-dev", "cublas"]'
+      - name: Install CUDA Toolkit 12.6 (Ubuntu 24.04 official repo)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-6 cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-cccl-12-6
+          echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
+          echo "CUDACXX=/usr/local/cuda-12.6/bin/nvcc" >> $GITHUB_ENV
       - name: Configure
         run: >
           cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
           -DHETEROACCEL_ENABLE_VULKAN=OFF -DHETEROACCEL_ENABLE_CUDA=ON
-          -DHETEROACCEL_CUDA_ARCHITECTURES="75;86;89"
+          -DHETEROACCEL_CUDA_ARCHITECTURES="75"
+          -DGGML_CUDA_FORCE_CUBLAS=ON -DGGML_CUDA_FA=OFF
       - name: Build
         run: cmake --build build --parallel 4
-      - name: Test (hardware tests skip without a GPU)
+      - name: Test
         run: ctest --test-dir build --output-on-failure --parallel 2
 
   # ---------------------------------------------------------------------------

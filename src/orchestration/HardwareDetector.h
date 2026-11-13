@@ -60,6 +60,7 @@ public:
     const std::vector<DeviceInfo>& devices() const;
     size_t available_system_ram() const;
     bool has_vulkan() const;
+    bool has_physical_vulkan_gpu() const { return has_physical_vulkan_gpu_; }
     bool has_cuda() const;
     const DeviceInfo* best_gpu() const;  // returns nullptr if CPU-only
     const DeviceInfo* best_cuda_gpu() const;  // CUDA-usable device with most VRAM; nullptr if none
@@ -84,6 +85,7 @@ private:
     size_t total_system_ram_ = 0;
     mutable size_t mock_avail_ram_ = 0;
     bool has_vulkan_ = false;
+    bool has_physical_vulkan_gpu_ = false;
     bool has_cuda_ = false;
     std::string cuda_reason_;
     bool detected_ = false;

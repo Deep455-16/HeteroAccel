@@ -160,7 +160,7 @@ std::unique_ptr<IInferenceEngine> makeEngine(const std::string& id, const BenchS
     if (id == "llama_cpu")
         return std::make_unique<orchestration::LlamaCppEngineAdapter>("llama_cpu", "cpu");
     if (id == "hydroxl_vulkan" || id == "llama_vulkan") {
-        if (!hw.has_vulkan()) {
+        if (!hw.has_physical_vulkan_gpu()) {
             st = "skipped";
             why = "no physical Vulkan GPU (software rasterizers such as llvmpipe are excluded)";
             return nullptr;

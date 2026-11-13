@@ -150,20 +150,24 @@ VulkanInfo VulkanDetector::detect() {
     vkDestroyInstance(instance, nullptr);
 
     // "Available" means: instance created AND at least one device AND at
-    // least one device with a usable compute queue.
+    // least one device with a usable compute queue. Physical GPU availability
+    // additionally requires !d.is_software_emulated (so llvmpipe/lavapipe can
+    // execute correctness tests in CI without ever being counted as physical GPU
+    // acceleration).
     bool anyComputeCapable = false;
-    bool anySoftwareOnlyCompute = false;
+    bool anyPhysicalCompute = false;
     for (const auto& d : info.devices) {
         if (!d.has_compute_capable_queue) continue;
-        if (d.is_software_emulated) { anySoftwareOnlyCompute = true; continue; }
         anyComputeCapable = true;
+        if (!d.is_software_emulated) {
+            anyPhysicalCompute = true;
+        }
     }
 
+    info.has_physical_gpu = anyPhysicalCompute;
     if (!anyComputeCapable) {
         info.available = false;
-        info.unavailable_reason = anySoftwareOnlyCompute
-            ? "Only software-emulated Vulkan devices (llvmpipe/lavapipe/SwiftShader) were found; no physical GPU"
-            : "Vulkan devices were enumerated, but none exposed a compute-capable queue family";
+        info.unavailable_reason = "Vulkan devices were enumerated, but none exposed a compute-capable queue family";
     } else {
         info.available = true;
     }

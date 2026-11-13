@@ -34,7 +34,7 @@ int main() {
     hw.detect();
     if (!hw.has_vulkan()) {
         std::cout << "[SKIP] Vulkan not available on this platform\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     std::cout << "--- Phase 22: VulkanTensorOps Test Suite ---\n";

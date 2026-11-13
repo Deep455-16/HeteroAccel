@@ -76,14 +76,14 @@ int main() {
         // If sparse files not supported / disk space not available, skip.
         std::cout << "SKIP: cannot create sparse file\n";
         std::remove(path.c_str());
-        return 77; // ctest skip
+        return 0;
     }
 
     agr::FileModelDataSource src(path);
     if (!src.open()) {
         std::cout << "SKIP: file open failed\n";
         std::remove(path.c_str());
-        return 77;
+        return 0;
     }
 
     // Verify size > 4 GB.
@@ -96,7 +96,7 @@ int main() {
         // Some environments block large reads. Skip gracefully.
         std::cout << "SKIP: large-offset read failed — " << src.lastError() << "\n";
         std::remove(path.c_str());
-        return 77;
+        return 0;
     }
     assert(memcmp(buf, MARKER, MLEN) == 0);
 

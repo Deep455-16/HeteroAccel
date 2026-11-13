@@ -102,7 +102,12 @@ def _load_lib():
         return _lib
 
     base = Path(__file__).resolve().parent.parent
-    dll_name = "heteroaccel.dll" if sys.platform == "win32" else "libheteroaccel.so"
+    if sys.platform == "win32":
+        dll_name = "heteroaccel.dll"
+    elif sys.platform == "darwin":
+        dll_name = "libheteroaccel.dylib"
+    else:
+        dll_name = "libheteroaccel.so"
 
     candidates = []
     env_path = os.environ.get("HETEROACCEL_LIB_PATH")
@@ -197,6 +202,25 @@ def _setup_signatures(lib):
 
     lib.ha_error_string.argtypes = [ctypes.c_int]
     lib.ha_error_string.restype = ctypes.c_char_p
+
+
+class _AttrDict(dict):
+    """Dict that also supports attribute-style lookup (d.foo == d['foo'])."""
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(key)
+
+
+class _CallableInt(int):
+    """int that can also be called like a zero-arg method: x and x() both work."""
+    def __call__(self) -> int:
+        return int(self)
+
+
+def version() -> str:
+    return Runtime.version()
 
 
 class Runtime:
@@ -299,13 +323,15 @@ class Model:
         a = lib.ha_model_arch(self._handle)
         return a.decode("utf-8") if a else ""
 
+    @property
     def context_length(self) -> int:
         lib = _load_lib()
-        return int(lib.ha_model_context_length(self._handle))
+        return _CallableInt(lib.ha_model_context_length(self._handle))
 
+    @property
     def vocab_size(self) -> int:
         lib = _load_lib()
-        return int(lib.ha_model_vocab_size(self._handle))
+        return _CallableInt(lib.ha_model_vocab_size(self._handle))
 
     def memory_estimate(self, max_seq_len: int = 2048) -> Dict[str, Union[int, bool, str]]:
         lib = _load_lib()
@@ -313,7 +339,7 @@ class Model:
         err = lib.ha_model_memory_estimate(self._handle, max_seq_len, ctypes.byref(est))
         if err != HA_OK:
             raise HeteroAccelError(err, "Failed to compute model memory estimate")
-        return {
+        return _AttrDict({
             "weights_bytes": int(est.weights_bytes),
             "kv_cache_bytes": int(est.kv_cache_bytes),
             "activations_bytes": int(est.activations_bytes),
@@ -321,7 +347,7 @@ class Model:
             "total_estimated": int(est.total_estimated),
             "unified_memory": bool(est.unified_memory),
             "notes": est.notes.decode("utf-8") if est.notes else "",
-        }
+        })
 
     def create_session(self) -> "Session":
         return Session(self)
@@ -359,7 +385,10 @@ class Session:
               token_ids: Optional[List[int]] = None,
               max_tokens: int = 16,
               temperature: float = 0.0,
-              top_p: float = 0.95) -> Dict[str, Union[str, int, float, bool, List[int]]]:
+              top_p: float = 0.95,
+              max_new_tokens: Optional[int] = None) -> Dict[str, Union[str, int, float, bool, List[int]]]:
+        if max_new_tokens is not None:
+            max_tokens = max_new_tokens
         lib = _load_lib()
         params = HaInferParams()
         params.max_new_tokens = max_tokens
@@ -392,7 +421,7 @@ class Session:
         if res.output_token_ids and res.n_output_tokens > 0:
             out_ids = [res.output_token_ids[i] for i in range(res.n_output_tokens)]
 
-        return {
+        return _AttrDict({
             "output_text": out_text,
             "token_ids": out_ids,
             "n_output_tokens": int(res.n_output_tokens),
@@ -400,19 +429,22 @@ class Session:
             "tokens_per_second": float(res.tokens_per_second),
             "gpu_used": bool(res.gpu_used),
             "backend_used": res.backend_used.decode("utf-8") if res.backend_used else "",
-        }
+        })
 
     def infer_stream(self, prompt: Optional[str] = None,
                      callback: Optional[Callable[[str, int], bool]] = None,
                      token_ids: Optional[List[int]] = None,
                      max_tokens: int = 16,
                      temperature: float = 0.0,
-                     top_p: float = 0.95):
+                     top_p: float = 0.95,
+                     max_new_tokens: Optional[int] = None):
         """
         Runs native token streaming.
         callback(token_text: str, token_id: int) -> bool
         Return False to cancel generation.
         """
+        if max_new_tokens is not None:
+            max_tokens = max_new_tokens
         lib = _load_lib()
         params = HaInferParams()
         params.max_new_tokens = max_tokens
@@ -435,19 +467,33 @@ class Session:
             params.token_ids = None
             params.n_token_ids = 0
 
+        streamed_pieces: List[str] = []
+        streamed_ids: List[int] = []
+        import time as _time
+        t0 = _time.perf_counter()
+
         def c_callback(text_ptr, tid, user_data):
+            text = text_ptr.decode("utf-8") if text_ptr else ""
+            streamed_pieces.append(text)
+            streamed_ids.append(int(tid))
             if callback is None:
                 return 0
-            text = text_ptr.decode("utf-8") if text_ptr else ""
             keep_going = callback(text, int(tid))
             return 0 if keep_going else 1
 
         cb_thunk = HaTokenCallback(c_callback)
         err = lib.ha_infer_stream(self._handle, ctypes.byref(params), cb_thunk, None)
+        elapsed = max(_time.perf_counter() - t0, 1e-6)
         if err != HA_OK and err != HA_ERR_CANCELLED:
             err_msg = lib.ha_error_string(err).decode("utf-8")
             raise HeteroAccelError(err, f"Streaming failed: {err_msg}")
-        return err
+        return _AttrDict({
+            "error": int(err),
+            "output_text": "".join(streamed_pieces),
+            "token_ids": streamed_ids,
+            "n_output_tokens": len(streamed_ids),
+            "tokens_per_second": float(len(streamed_ids)) / elapsed if streamed_ids else 0.0,
+        })
 
     def cancel(self):
         lib = _load_lib()

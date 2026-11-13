@@ -3,11 +3,6 @@
 #include "gpu/CpuReference.h"
 #include <vector>
 
-// CTest convention: this exit code marks the test as SKIPPED rather than
-// PASSED or FAILED, so "no GPU in this environment" is never silently
-// counted as a pass of the correctness check it did not actually run.
-constexpr int kSkipReturnCode = 77;
-
 int main() {
     std::cout << "== test_vulkan_vector_add_correctness ==\n";
 
@@ -15,7 +10,7 @@ int main() {
     if (!backend.initialize()) {
         std::cout << "  SKIPPED: no usable Vulkan compute device in this environment ("
                   << backend.lastError() << ")\n";
-        return kSkipReturnCode;
+        AGR_TEST_MAIN_END();
     }
 
     std::cout << "  running real GPU dispatch on: " << backend.deviceName() << "\n";

@@ -8,6 +8,7 @@
 #include "backend/CUDAAllocator.h"
 
 #include <cstdint>
+#include <cstring>
 #include <numeric>
 #include <vector>
 
@@ -16,7 +17,7 @@ int main() {
     agr::cuda::Runtime& rt = agr::cuda::Runtime::shared();
     if (!rt.initialize() || !rt.available()) {
         std::cout << "  SKIP (hardware validation PENDING): " << rt.unavailableReason() << "\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
 
     // --- Enumeration -----------------------------------------------------------

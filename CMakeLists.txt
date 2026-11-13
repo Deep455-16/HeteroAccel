@@ -127,6 +127,7 @@ if(HETEROACCEL_ENABLE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     message(STATUS "CUDA inference ENABLED (CUDA Toolkit ${CUDAToolkit_VERSION}, nvcc ${CMAKE_CUDA_COMPILER})")
     set(GGML_CUDA ON CACHE BOOL "Enable CUDA backend in ggml/llama.cpp" FORCE)
+    set(GGML_CUDA_NO_VMM ON CACHE BOOL "Avoid direct libcuda.so link so binaries run on hosts without NVIDIA driver" FORCE)
     if(HETEROACCEL_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES "${HETEROACCEL_CUDA_ARCHITECTURES}" CACHE STRING "" FORCE)
     endif()
@@ -136,6 +137,7 @@ else()
 endif()
 
 set(GGML_VULKAN          ${AGR_USE_VULKAN} CACHE BOOL "Enable Vulkan backend in ggml/llama.cpp" FORCE)
+set(GGML_METAL           OFF CACHE BOOL "Disable Metal backend in ggml/llama.cpp" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
@@ -542,30 +544,32 @@ target_link_libraries(adaptive-gpu PRIVATE
 
 add_dependencies(adaptive-gpu agr_shaders)
 
-# Copy compiled shaders beside the executable.
-add_custom_command(
-    TARGET adaptive-gpu
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:adaptive-gpu>/shaders"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_BINARY_DIR}/shaders/vector_add.comp.spv"
-        "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/vector_add.comp.spv"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_BINARY_DIR}/shaders/hydroxl_matvec.comp.spv"
-        "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_matvec.comp.spv"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_BINARY_DIR}/shaders/hydroxl_rmsnorm.comp.spv"
-        "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_rmsnorm.comp.spv"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_BINARY_DIR}/shaders/hydroxl_elemwise.comp.spv"
-        "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_elemwise.comp.spv"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_BINARY_DIR}/shaders/hydroxl_softmax.comp.spv"
-        "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_softmax.comp.spv"
-    COMMENT "Copying compiled shaders beside adaptive-gpu"
-    VERBATIM
-)
+# Copy compiled shaders beside the executable when a shader compiler is present.
+if(AGR_HAVE_SHADER_COMPILER)
+    add_custom_command(
+        TARGET adaptive-gpu
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:adaptive-gpu>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/shaders/vector_add.comp.spv"
+            "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/vector_add.comp.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/shaders/hydroxl_matvec.comp.spv"
+            "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_matvec.comp.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/shaders/hydroxl_rmsnorm.comp.spv"
+            "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_rmsnorm.comp.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/shaders/hydroxl_elemwise.comp.spv"
+            "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_elemwise.comp.spv"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/shaders/hydroxl_softmax.comp.spv"
+            "$<TARGET_FILE_DIR:adaptive-gpu>/shaders/hydroxl_softmax.comp.spv"
+        COMMENT "Copying compiled shaders beside adaptive-gpu"
+        VERBATIM
+    )
+endif()
 
 # =============================================================================
 # Phase 18: Dynamic Engine Plugin System
@@ -872,11 +876,13 @@ add_dependencies(agr_bench agr_shaders)
 
 add_executable(heteroaccel-bench src/benchmark/bench_main.cpp)
 target_link_libraries(heteroaccel-bench PRIVATE agr_bench)
-add_custom_command(TARGET heteroaccel-bench POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:heteroaccel-bench>/shaders"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:heteroaccel-bench>/shaders"
-    VERBATIM
-)
+if(AGR_HAVE_SHADER_COMPILER)
+    add_custom_command(TARGET heteroaccel-bench POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:heteroaccel-bench>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:heteroaccel-bench>/shaders"
+        VERBATIM
+    )
+endif()
 
 # =============================================================================
 # Examples

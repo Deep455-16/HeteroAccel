@@ -2,8 +2,6 @@
 #include "gpu/VulkanBackend.h"
 #include <vector>
 
-constexpr int kSkipReturnCode = 77;
-
 int main() {
     std::cout << "== test_vulkan_buffer_transfer ==\n";
 
@@ -11,7 +9,7 @@ int main() {
     if (!backend.initialize()) {
         std::cout << "  SKIPPED: no usable Vulkan compute device in this environment ("
                   << backend.lastError() << ")\n";
-        return kSkipReturnCode;
+        AGR_TEST_MAIN_END();
     }
 
     // Two sizes: small (well within any single heap) and larger (more

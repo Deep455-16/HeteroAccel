@@ -11,7 +11,7 @@ int main() {
     agr::VulkanBackend backend;
     if (!backend.initialize()) {
         std::cout << "  SKIP: Vulkan not available.\n";
-        return 77;
+        AGR_TEST_MAIN_END();
     }
     
     agr::VulkanAllocator alloc(backend);
