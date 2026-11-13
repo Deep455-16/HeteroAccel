@@ -843,6 +843,42 @@ install(FILES
 )
 
 # =============================================================================
+# Phase 29: end-to-end benchmark library + heteroaccel-bench driver
+# =============================================================================
+
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE AGR_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT AGR_GIT_COMMIT)
+    set(AGR_GIT_COMMIT "unknown")
+endif()
+
+add_library(agr_bench STATIC src/benchmark/EndToEndBench.cpp)
+target_include_directories(agr_bench PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(agr_bench PUBLIC agr_orchestration agr_hydroxl agr_llm agr_core)
+target_compile_definitions(agr_bench PRIVATE
+    AGR_BENCH_VERSION="${PROJECT_VERSION}"
+    AGR_BENCH_GIT_COMMIT="${AGR_GIT_COMMIT}"
+    "AGR_BENCH_BUILD_TYPE=\"$<CONFIG>\""
+)
+if(WIN32)
+    target_link_libraries(agr_bench PUBLIC psapi)
+endif()
+add_dependencies(agr_bench agr_shaders)
+
+add_executable(heteroaccel-bench src/benchmark/bench_main.cpp)
+target_link_libraries(heteroaccel-bench PRIVATE agr_bench)
+add_custom_command(TARGET heteroaccel-bench POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:heteroaccel-bench>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:heteroaccel-bench>/shaders"
+    VERBATIM
+)
+
+# =============================================================================
 # Examples
 # =============================================================================
 

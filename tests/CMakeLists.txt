@@ -354,3 +354,16 @@ set_tests_properties(
 
 # Phase 28 - Cross-platform & hardware validation
 agr_add_test(test_p28_portability test_p28_portability.cpp)
+
+# Phase 29 - Benchmark harness & performance regression gate
+agr_add_test(test_p29_perf_regression test_p29_perf_regression.cpp)
+target_link_libraries(test_p29_perf_regression PRIVATE agr_bench)
+set_tests_properties(test_p29_perf_regression PROPERTIES TIMEOUT 600)
+
+agr_add_test(test_p29_real_model_equiv test_p29_real_model_equiv.cpp)
+target_link_libraries(test_p29_real_model_equiv PRIVATE llama ggml)
+target_include_directories(test_p29_real_model_equiv PRIVATE
+    ${llama_cpp_SOURCE_DIR}/include
+    ${llama_cpp_SOURCE_DIR}/ggml/include
+)
+set_tests_properties(test_p29_real_model_equiv PROPERTIES TIMEOUT 600)

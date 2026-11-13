@@ -115,6 +115,10 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
     sp.top_k = 40;
     sp.top_p = req.top_p;
     sp.seed = 42;
+    // Greedy decoding (temperature 0) is a pure argmax, matching llama.cpp. The default
+    // repetition penalty would otherwise penalise prompt tokens (e.g. " is") and make
+    // greedy output differ from every reference engine for identical settings.
+    if (req.temperature <= 0.0f) sp.repeat_penalty = 1.0f;
     hydroxl::HydroXLSampler sampler(sp);
 
     std::vector<int> out_ids;
@@ -587,6 +591,10 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
     sp.top_k = 40;
     sp.top_p = req.top_p;
     sp.seed = 42;
+    // Greedy decoding (temperature 0) is a pure argmax, matching llama.cpp. The default
+    // repetition penalty would otherwise penalise prompt tokens (e.g. " is") and make
+    // greedy output differ from every reference engine for identical settings.
+    if (req.temperature <= 0.0f) sp.repeat_penalty = 1.0f;
     hydroxl::HydroXLSampler sampler(sp);
 
     std::vector<int> out_ids;

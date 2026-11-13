@@ -4,10 +4,16 @@
 #include "hydroxl/HydroXLOps.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <condition_variable>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace agr {
@@ -33,14 +39,103 @@ bool rms_norm(const float* x, const float* weight, float* out,
 }
 
 // ---------------------------------------------------------------------------
-// Matrix-vector product (row-major weight matrix)
-// out[m] = sum_k A[m*k_cols + k] * x[k]
+// Row-parallel execution pool (Phase 29)
+//
+// Profiling showed single-threaded matvec dominates end-to-end CPU inference
+// (every generated token streams all float32 weights through one core). Rows
+// are independent, and each row keeps the exact scalar accumulation order, so
+// results are bit-identical to the serial kernel.
+//
+// The pool is intentionally never destroyed (workers are detached): joining
+// threads from a static destructor can deadlock during DLL unload on Windows.
+// Concurrent callers never block each other: if the pool is busy, the caller
+// simply runs its matvec serially.
 // ---------------------------------------------------------------------------
-bool matvec(const float* A, const float* x, float* out,
-            uint32_t m_rows, uint32_t k_cols) noexcept {
-    if (!A || !x || !out || m_rows == 0 || k_cols == 0) return false;
+namespace {
 
-    for (uint32_t m = 0; m < m_rows; ++m) {
+class ParallelPool {
+public:
+    static ParallelPool& instance() {
+        static ParallelPool* p = new ParallelPool();
+        return *p;
+    }
+
+    unsigned workers() const { return n_workers_; }
+
+    bool parallel_for(uint32_t total, uint32_t chunk,
+                      const std::function<void(uint32_t, uint32_t)>& fn) {
+        if (n_workers_ == 0) return false;
+        std::unique_lock<std::mutex> busy(busy_mu_, std::try_to_lock);
+        if (!busy.owns_lock()) return false;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            fn_ = &fn;
+            total_ = total;
+            chunk_ = chunk;
+            next_.store(0);
+            pending_ = n_workers_;
+            ++gen_;
+        }
+        cv_.notify_all();
+        drain();   // calling thread participates
+        std::unique_lock<std::mutex> lk(mu_);
+        done_cv_.wait(lk, [&] { return pending_ == 0; });
+        fn_ = nullptr;
+        return true;
+    }
+
+private:
+    ParallelPool() {
+        unsigned total = std::thread::hardware_concurrency();
+        if (total == 0) total = 1;
+        total = (std::min)(total, 8u);   // matvec is memory-bound; more threads stop helping
+        if (const char* e = std::getenv("HETEROACCEL_THREADS")) {
+            int v = std::atoi(e);
+            if (v >= 1) total = static_cast<unsigned>(v);
+        }
+        n_workers_ = total - 1;
+        for (unsigned i = 0; i < n_workers_; ++i) {
+            std::thread([this] { worker_loop(); }).detach();
+        }
+    }
+
+    void drain() {
+        for (;;) {
+            uint32_t b = next_.fetch_add(chunk_);
+            if (b >= total_) break;
+            (*fn_)(b, (std::min)(b + chunk_, total_));
+        }
+    }
+
+    void worker_loop() {
+        uint64_t seen = 0;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                cv_.wait(lk, [&] { return gen_ != seen; });
+                seen = gen_;
+            }
+            drain();
+            std::lock_guard<std::mutex> lk(mu_);
+            if (--pending_ == 0) done_cv_.notify_one();
+        }
+    }
+
+    unsigned n_workers_ = 0;
+    std::mutex busy_mu_;
+    std::mutex mu_;
+    std::condition_variable cv_, done_cv_;
+    uint64_t gen_ = 0;
+    unsigned pending_ = 0;
+    const std::function<void(uint32_t, uint32_t)>* fn_ = nullptr;
+    uint32_t total_ = 0;
+    uint32_t chunk_ = 1;
+    std::atomic<uint32_t> next_{0};
+};
+
+inline void matvec_rows(const float* A, const float* x, float* out,
+                        uint32_t row_begin, uint32_t row_end, uint32_t k_cols) {
+    for (uint32_t m = row_begin; m < row_end; ++m) {
         const float* row = A + static_cast<size_t>(m) * k_cols;
         float acc0 = 0.0f;
         float acc1 = 0.0f;
@@ -59,6 +154,38 @@ bool matvec(const float* A, const float* x, float* out,
         }
         out[m] = acc;
     }
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Matrix-vector product (row-major weight matrix)
+// out[m] = sum_k A[m*k_cols + k] * x[k]
+// ---------------------------------------------------------------------------
+bool matvec(const float* A, const float* x, float* out,
+            uint32_t m_rows, uint32_t k_cols) noexcept {
+    if (!A || !x || !out || m_rows == 0 || k_cols == 0) return false;
+
+    // Small products are cheaper serially than the hand-off to worker threads.
+    constexpr size_t kParallelThresholdElems = 1u << 20;
+    const size_t elems = static_cast<size_t>(m_rows) * k_cols;
+    if (elems >= kParallelThresholdElems) {
+        auto& pool = ParallelPool::instance();
+        if (pool.workers() > 0) {
+            // ~4 chunks per thread for load balance.
+            uint32_t chunk = (std::max)(1u, m_rows / ((pool.workers() + 1) * 4));
+            bool ran = false;
+            try {
+                ran = pool.parallel_for(m_rows, chunk, [&](uint32_t b, uint32_t e) {
+                    matvec_rows(A, x, out, b, e, k_cols);
+                });
+            } catch (...) {
+                ran = false;
+            }
+            if (ran) return true;
+        }
+    }
+    matvec_rows(A, x, out, 0, m_rows, k_cols);
     return true;
 }
 
