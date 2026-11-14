@@ -29,7 +29,7 @@ int main() {
     // --- Version ---
     const char* v = ha_version_string();
     AGR_CHECK(v != nullptr);
-    AGR_CHECK(std::strstr(v, "0.25") != nullptr);
+    AGR_CHECK(std::strstr(v, "0.30") != nullptr);
     std::cout << "  Version: " << v << "\n";
 
     // --- Runtime lifecycle ---

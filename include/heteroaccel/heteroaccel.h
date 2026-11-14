@@ -30,8 +30,9 @@ extern "C" {
 
 // Versioning
 #define HETEROACCEL_VERSION_MAJOR 0
-#define HETEROACCEL_VERSION_MINOR 25
+#define HETEROACCEL_VERSION_MINOR 30
 #define HETEROACCEL_VERSION_PATCH 0
+#define HETEROACCEL_VERSION_STRING "0.30.0"
 
 // Opaque handles
 typedef struct HaRuntime_  *HaRuntime;

@@ -49,7 +49,7 @@ int main() {
     AGR_CHECK(std::filesystem::exists(c_header));
     AGR_CHECK(std::filesystem::exists(cpp_header));
 
-    AGR_CHECK(file_contains(c_header, "HETEROACCEL_VERSION_MINOR 25"));
+    AGR_CHECK(file_contains(c_header, "HETEROACCEL_VERSION_MINOR 30"));
     AGR_CHECK(file_contains(c_header, "HaMemoryEstimate"));
     AGR_CHECK(file_contains(c_header, "ha_model_memory_estimate"));
     AGR_CHECK(file_contains(c_header, "ha_infer_stream"));
@@ -81,7 +81,7 @@ int main() {
     bool found_pc = false;
     bool found_cmake_cfg = false;
     for (const auto& d : search_dirs) {
-        if (file_contains(d / "heteroaccel.pc", "0.24.0")) {
+        if (file_contains(d / "heteroaccel.pc", "0.30.0")) {
             found_pc = true;
         }
         if (file_contains(d / "HeteroAccelConfig.cmake", "HeteroAccelTargets")) {

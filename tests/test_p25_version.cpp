@@ -26,7 +26,7 @@ int main() {
 
     // Compile-time macros
     AGR_CHECK(HETEROACCEL_VERSION_MAJOR == 0);
-    AGR_CHECK(HETEROACCEL_VERSION_MINOR == 25);
+    AGR_CHECK(HETEROACCEL_VERSION_MINOR == 30);
     AGR_CHECK(HETEROACCEL_VERSION_PATCH == 0);
 
     // Runtime version string
@@ -35,7 +35,7 @@ int main() {
 
     const char* ver = ha_version_string();
     AGR_CHECK(ver != nullptr);
-    AGR_CHECK(std::strstr(ver, "0.25") != nullptr);
+    AGR_CHECK(std::strstr(ver, "0.30") != nullptr);
     std::cout << "  ha_version_string(): " << ver << "\n";
 
     ha_runtime_destroy(rt);
