@@ -135,6 +135,7 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
 
     std::vector<int> out_ids;
     std::string out_text;
+    std::string utf8_pending;
     int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
 
     auto t_gen_start = std::chrono::steady_clock::now();
@@ -154,10 +155,10 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
 
         int tid = static_cast<int>(next_tok);
         out_ids.push_back(tid);
-        std::string piece = tokenizer_->decodeToken(next_tok);
+        std::string piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
         out_text += piece;
 
-        if (cb) {
+        if (cb && !piece.empty()) {
             if (!cb(piece, tid)) {
                 cancelled = true;
                 break;
@@ -174,6 +175,7 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
         }
         ++pos;
     }
+    utf8_pending.clear();
     auto t_gen_end = std::chrono::steady_clock::now();
 
     res.output_token_ids = out_ids;
@@ -623,6 +625,7 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
 
     std::vector<int> out_ids;
     std::string out_text;
+    std::string utf8_pending;
     int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
 
     auto t_gen_start = std::chrono::steady_clock::now();
@@ -642,10 +645,10 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
 
         int tid = static_cast<int>(next_tok);
         out_ids.push_back(tid);
-        std::string piece = tokenizer_->decodeToken(next_tok);
+        std::string piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
         out_text += piece;
 
-        if (cb) {
+        if (cb && !piece.empty()) {
             if (!cb(piece, tid)) {
                 cancelled = true;
                 break;
@@ -662,6 +665,7 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
         }
         ++pos;
     }
+    utf8_pending.clear();
     auto t_gen_end = std::chrono::steady_clock::now();
 
     res.output_token_ids = out_ids;

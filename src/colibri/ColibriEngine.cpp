@@ -27,33 +27,102 @@ bool containsWordOrSubstr(const std::string& haystack_lower, const char* needle)
 }
 
 int computeLoopNestingDepth(const std::string& text) {
-    // Count nested loop constructs in code or pseudocode ("for", "while", "do")
-    std::istringstream iss(text);
-    std::string line;
+    // Count nested loop constructs ("for", "while") across both multi-line and
+    // single-line braced or braceless C/C++/Python code snippets.
+    std::string lower = toLowerCopy(text);
     int current_loop_depth = 0;
     int max_loop_depth = 0;
     int brace_depth = 0;
+    int paren_depth = 0;
     std::vector<int> loop_brace_levels;
 
-    while (std::getline(iss, line)) {
-        std::string lower = toLowerCopy(line);
-        // Trim leading whitespace
-        size_t first = lower.find_first_not_of(" \t\r\n");
-        if (first != std::string::npos) {
-            std::string trimmed = lower.substr(first);
-            bool is_loop = (trimmed.rfind("for ", 0) == 0 || trimmed.rfind("for(", 0) == 0 ||
-                            trimmed.rfind("while ", 0) == 0 || trimmed.rfind("while(", 0) == 0 ||
-                            trimmed.find(" for ") != std::string::npos ||
-                            trimmed.find(" for(") != std::string::npos);
-            if (is_loop) {
-                ++current_loop_depth;
-                if (current_loop_depth > max_loop_depth) {
-                    max_loop_depth = current_loop_depth;
-                }
-                loop_brace_levels.push_back(brace_depth);
+    auto isIdentChar = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+
+    size_t i = 0;
+    const size_t n = lower.size();
+    while (i < n) {
+        char c = lower[i];
+
+        // Skip string literals
+        if (c == '"' || c == '\'') {
+            char quote = c;
+            ++i;
+            while (i < n && lower[i] != quote) {
+                if (lower[i] == '\\' && i + 1 < n) ++i;
+                ++i;
             }
+            if (i < n) ++i;
+            continue;
         }
-        for (char c : line) {
+
+        if (c == '(') {
+            ++paren_depth;
+            ++i;
+            continue;
+        }
+        if (c == ')') {
+            if (paren_depth > 0) --paren_depth;
+            ++i;
+            continue;
+        }
+
+        if (paren_depth == 0) {
+            // Check for "for" or "while" token at word boundary
+            bool matched_for = (i + 3 <= n && lower.compare(i, 3, "for") == 0 &&
+                                (i == 0 || !isIdentChar(lower[i - 1])) &&
+                                (i + 3 == n || !isIdentChar(lower[i + 3])));
+            bool matched_while = (!matched_for && i + 5 <= n && lower.compare(i, 5, "while") == 0 &&
+                                  (i == 0 || !isIdentChar(lower[i - 1])) &&
+                                  (i + 5 == n || !isIdentChar(lower[i + 5])));
+
+            if (matched_for || matched_while) {
+                size_t kw_len = matched_for ? 3 : 5;
+                size_t j = i + kw_len;
+                while (j < n && (lower[j] == ' ' || lower[j] == '\t')) ++j;
+                // Confirm it's a loop construct: either C-style '(' or Python-style identifier + ':'
+                bool is_c_loop = (j < n && lower[j] == '(');
+                bool is_py_loop = false;
+                if (!is_c_loop && matched_for && j < n && isIdentChar(lower[j])) {
+                    size_t line_end = lower.find('\n', j);
+                    std::string rest = lower.substr(j, line_end == std::string::npos ? std::string::npos : (line_end - j));
+                    if (rest.find(" in ") != std::string::npos && rest.find(':') != std::string::npos) {
+                        is_py_loop = true;
+                    }
+                }
+
+                if (is_c_loop || is_py_loop) {
+                    ++current_loop_depth;
+                    if (current_loop_depth > max_loop_depth) {
+                        max_loop_depth = current_loop_depth;
+                    }
+                    loop_brace_levels.push_back(brace_depth);
+
+                    if (is_c_loop) {
+                        // Advance past the entire balanced (...) loop header so ';' inside
+                        // for(init; cond; inc) does not terminate the loop scope!
+                        int hdr_paren = 0;
+                        i = j;
+                        while (i < n) {
+                            if (lower[i] == '(') ++hdr_paren;
+                            else if (lower[i] == ')') {
+                                --hdr_paren;
+                                if (hdr_paren == 0) {
+                                    ++i;
+                                    break;
+                                }
+                            }
+                            ++i;
+                        }
+                        continue;
+                    } else {
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+
             if (c == '{') {
                 ++brace_depth;
             } else if (c == '}') {
@@ -62,8 +131,16 @@ int computeLoopNestingDepth(const std::string& text) {
                     loop_brace_levels.pop_back();
                     if (current_loop_depth > 0) --current_loop_depth;
                 }
+            } else if (c == ';') {
+                // A statement semicolon outside 'for(...)' closes any braceless loop(s)
+                // opened at the current brace_depth
+                while (!loop_brace_levels.empty() && loop_brace_levels.back() == brace_depth) {
+                    loop_brace_levels.pop_back();
+                    if (current_loop_depth > 0) --current_loop_depth;
+                }
             }
         }
+        ++i;
     }
     return max_loop_depth;
 }

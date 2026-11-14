@@ -9,6 +9,19 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define PSAPI_VERSION 2
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 
 namespace agr {
 namespace collaboration {
@@ -43,10 +56,63 @@ ModelMemoryProfile CollaborativeResourceManager::estimateModelMemory(
             if (prof.vocab_size == 0) {
                 prof.vocab_size = loader.kvUInt32(prof.arch + ".vocab_size", 151936);
             }
-            for (const auto& t : loader.tensors()) {
-                if (t.type != hydroxl::GGMLType::UNKNOWN) {
-                    prof.quant_type = static_cast<int>(t.type);
-                    break;
+            // Determine model quantization type from GGUF general.file_type when present,
+            // or from transformer block weight tensors for synthetic GGUFs.
+            uint32_t ftype = loader.kvUInt32("general.file_type", 0xFFFFFFFFu);
+            int mapped_ftype = -1;
+            switch (ftype) {
+                case 0:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::F32);  break;
+                case 1:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::F16);  break;
+                case 2:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q4_0); break;
+                case 3:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q4_1); break;
+                case 7:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q8_0); break;
+                case 8:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q5_0); break;
+                case 9:  mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q5_1); break;
+                case 10: mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q2_K); break;
+                case 11:
+                case 12:
+                case 13: mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q3_K); break;
+                case 14:
+                case 15: mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q4_K); break;
+                case 16:
+                case 17: mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q5_K); break;
+                case 18: mapped_ftype = static_cast<int>(hydroxl::GGMLType::Q6_K); break;
+                default: break;
+            }
+            if (mapped_ftype >= 0) {
+                prof.quant_type = mapped_ftype;
+            } else {
+                std::map<int, size_t> blk_quant_counts;
+                std::map<int, size_t> all_quant_counts;
+                for (const auto& t : loader.tensors()) {
+                    if (t.type == hydroxl::GGMLType::UNKNOWN || t.type == hydroxl::GGMLType::F32) {
+                        continue;
+                    }
+                    all_quant_counts[static_cast<int>(t.type)] += 1;
+                    if (t.name.find("blk.") != std::string::npos &&
+                        t.name.find("norm") == std::string::npos &&
+                        t.name.find(".bias") == std::string::npos) {
+                        blk_quant_counts[static_cast<int>(t.type)] += 1;
+                    }
+                }
+                const auto& target_counts = !blk_quant_counts.empty() ? blk_quant_counts : all_quant_counts;
+                if (!target_counts.empty()) {
+                    int best_q = prof.quant_type;
+                    size_t best_score = 0;
+                    for (const auto& kv : target_counts) {
+                        if (kv.second > best_score) {
+                            best_score = kv.second;
+                            best_q = kv.first;
+                        }
+                    }
+                    prof.quant_type = best_q;
+                } else {
+                    for (const auto& t : loader.tensors()) {
+                        if (t.type != hydroxl::GGMLType::UNKNOWN) {
+                            prof.quant_type = static_cast<int>(t.type);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -91,6 +157,72 @@ size_t CollaborativeResourceManager::effectiveBudgetBytes() const {
     }
     size_t avail = availableRamBytes();
     return static_cast<size_t>(avail * 0.80);
+}
+
+size_t CollaborativeResourceManager::currentProcessResidentBytes() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return static_cast<size_t>(pmc.WorkingSetSize);
+    }
+    return 0;
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+        return static_cast<size_t>(info.resident_size);
+    }
+    return 0;
+#elif defined(__linux__)
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::istringstream iss(line.substr(6));
+            size_t kb = 0;
+            iss >> kb;
+            return kb * 1024ULL;
+        }
+    }
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+size_t CollaborativeResourceManager::peakProcessResidentBytes() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return static_cast<size_t>(pmc.PeakWorkingSetSize);
+    }
+    return 0;
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+        return static_cast<size_t>(info.resident_size_max);
+    }
+    return 0;
+#elif defined(__linux__)
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("VmHWM:", 0) == 0) {
+            std::istringstream iss(line.substr(6));
+            size_t kb = 0;
+            iss >> kb;
+            return kb * 1024ULL;
+        }
+    }
+    return currentProcessResidentBytes();
+#else
+    return 0;
+#endif
 }
 
 bool CollaborativeResourceManager::canKeepConcurrentNeuralEngines(
@@ -239,6 +371,8 @@ ResourceCoordinationTelemetry CollaborativeResourceManager::telemetrySnapshot(
                                           profile.llamacpp_estimated_bytes +
                                           profile.colibri_estimated_bytes;
     t.peak_resident_bytes = peak_resident_bytes_;
+    t.actual_process_rss_bytes = currentProcessResidentBytes();
+    t.actual_process_peak_rss_bytes = peakProcessResidentBytes();
     t.memory_constrained_mode = memory_constrained_mode;
     t.concurrent_wave_executed = concurrent_wave_executed;
     t.models_loaded_count = models_loaded_count_;

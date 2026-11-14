@@ -59,7 +59,10 @@ enum class QueryCategory {
     CODE_ANALYSIS_AND_OPTIMIZATION,
     COMPLEX_TECHNICAL_QUESTION,
     DEBUGGING_AND_VERIFICATION,
-    GENERAL_REASONING_AND_SYNTHESIS
+    GENERAL_REASONING_AND_SYNTHESIS,
+    SIMPLE_FACTUAL_QA,
+    MODEL_METADATA_INSPECTION,
+    STATIC_COMPLEXITY_ONLY
 };
 
 inline const char* queryCategoryToString(QueryCategory c) noexcept {
@@ -72,6 +75,12 @@ inline const char* queryCategoryToString(QueryCategory c) noexcept {
             return "debugging_and_verification";
         case QueryCategory::GENERAL_REASONING_AND_SYNTHESIS:
             return "general_reasoning_and_synthesis";
+        case QueryCategory::SIMPLE_FACTUAL_QA:
+            return "simple_factual_qa";
+        case QueryCategory::MODEL_METADATA_INSPECTION:
+            return "model_metadata_inspection";
+        case QueryCategory::STATIC_COMPLEXITY_ONLY:
+            return "static_complexity_only";
     }
     return "general_reasoning_and_synthesis";
 }
@@ -154,6 +163,7 @@ struct CollaborativeTask {
     HardwareBackend assigned_backend = HardwareBackend::CPU;
     std::string     orchestrator_backend_id;
     std::string     assignment_reason;
+    std::vector<std::string> rejected_candidates;
 
     std::vector<std::string> dependencies; ///< Predecessor task_ids
     size_t      wave_index = 0;            ///< Topological wave index (0 = root wave)
@@ -203,6 +213,8 @@ struct ResourceCoordinationTelemetry {
     size_t effective_ram_budget_bytes = 0;
     size_t estimated_concurrent_neural_bytes = 0;
     size_t peak_resident_bytes = 0;
+    size_t actual_process_rss_bytes = 0;      ///< Actual OS process working-set RSS
+    size_t actual_process_peak_rss_bytes = 0; ///< Actual OS process peak working-set RSS
     bool   memory_constrained_mode = false;   ///< True when sequential model swapping was used
     bool   concurrent_wave_executed = false;  ///< True when >= 2 tasks ran in parallel
     int    models_loaded_count = 0;

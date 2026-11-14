@@ -32,7 +32,9 @@ std::string CollaborativeResult::formatTelemetryReport() const {
         << ")\n";
     out << "Memory Budget   : " << (resource_telemetry.effective_ram_budget_bytes / (1024 * 1024))
         << " MB (Available RAM=" << (resource_telemetry.available_ram_bytes / (1024 * 1024))
-        << " MB, Peak Resident=" << (resource_telemetry.peak_resident_bytes / (1024 * 1024))
+        << " MB, Est Peak Resident=" << (resource_telemetry.peak_resident_bytes / (1024 * 1024))
+        << " MB, Actual Process RSS=" << (resource_telemetry.actual_process_rss_bytes / (1024 * 1024))
+        << " MB, Peak Process RSS=" << (resource_telemetry.actual_process_peak_rss_bytes / (1024 * 1024))
         << " MB, Loaded=" << resource_telemetry.models_loaded_count
         << ", Evicted=" << resource_telemetry.models_evicted_count << ")\n\n";
 
@@ -49,6 +51,17 @@ std::string CollaborativeResult::formatTelemetryReport() const {
             out << " | Fallback: " << t.fallback_reason;
         }
         out << "\n";
+        if (!t.assignment_reason.empty()) {
+            out << "    Placement : " << t.assignment_reason << "\n";
+        }
+        if (!t.rejected_candidates.empty()) {
+            out << "    Rejected  : ";
+            for (size_t ri = 0; ri < t.rejected_candidates.size(); ++ri) {
+                if (ri > 0) out << "; ";
+                out << t.rejected_candidates[ri];
+            }
+            out << "\n";
+        }
     }
 
     out << "\n--- Engine Participation Summary ---\n";

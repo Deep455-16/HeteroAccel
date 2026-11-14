@@ -50,6 +50,14 @@ bool hydroxlSupportsVulkanQuant(int quant_type) {
 QueryCategory WorkloadPartitioner::classifyQuery(const std::string& prompt) {
     std::string lower = toLower(prompt);
 
+    if (hasAnyKeyword(lower, {"gguf metadata", "model metadata", "inspect gguf",
+                              "inspect model header", "gqa head ratio"})) {
+        return QueryCategory::MODEL_METADATA_INSPECTION;
+    }
+    if (hasAnyKeyword(lower, {"static complexity only", "loop complexity only",
+                              "deterministic complexity check"})) {
+        return QueryCategory::STATIC_COMPLEXITY_ONLY;
+    }
     if (hasAnyKeyword(lower, {"bug", "race", "deadlock", "crash", "segfault",
                               "verify", "validate", "leak", "hazard"})) {
         return QueryCategory::DEBUGGING_AND_VERIFICATION;
@@ -62,6 +70,10 @@ QueryCategory WorkloadPartitioner::classifyQuery(const std::string& prompt) {
                               "design", "gpu", "vulkan", "cuda", "attention", "transformer", "quantization"})) {
         return QueryCategory::COMPLEX_TECHNICAL_QUESTION;
     }
+    if (!hasAnyKeyword(lower, {"analyze", "summarize", "compare", "discuss", "evaluate", "synthesis"}) &&
+        hasAnyKeyword(lower, {"what is the capital", "who invented", "when was ", "where is ", "what is 2"})) {
+        return QueryCategory::SIMPLE_FACTUAL_QA;
+    }
     return QueryCategory::GENERAL_REASONING_AND_SYNTHESIS;
 }
 
@@ -73,14 +85,19 @@ EngineId WorkloadPartitioner::selectEngineForTask(
     switch (task_type) {
         case TaskType::STRUCTURAL_AND_REASONING:
         case TaskType::CONCEPTUAL_EXPLANATION: {
-            if (hydroxlSupportsArch(model_profile.arch)) {
-                reason_out = "HydroXL selected for native structural/conceptual reasoning on supported architecture '" +
-                             (model_profile.arch.empty() ? std::string("qwen2") : model_profile.arch) + "'";
-                return EngineId::HYDROXL;
+            if (!hydroxlSupportsArch(model_profile.arch)) {
+                reason_out = "Architecture '" + model_profile.arch +
+                             "' not in HydroXL native table; reassigned to llama.cpp compatibility engine";
+                return EngineId::LLAMA_CPP;
             }
-            reason_out = "Architecture '" + model_profile.arch +
-                         "' not in HydroXL native table; reassigned to llama.cpp compatibility engine";
-            return EngineId::LLAMA_CPP;
+            if (model_profile.n_ctx > 2048) {
+                reason_out = "Requested context length (" + std::to_string(model_profile.n_ctx) +
+                             ") exceeds HydroXL 2048-token KV-cache cap; reassigned to llama.cpp";
+                return EngineId::LLAMA_CPP;
+            }
+            reason_out = "HydroXL selected for native structural/conceptual reasoning on supported architecture '" +
+                         (model_profile.arch.empty() ? std::string("qwen2") : model_profile.arch) + "'";
+            return EngineId::HYDROXL;
         }
         case TaskType::IMPLEMENTATION_AND_EDGE_CASES:
         case TaskType::PRACTICAL_EXAMPLES: {
@@ -203,6 +220,76 @@ PartitionPlan WorkloadPartitioner::createPlan(
     }
     std::string full_query = conv_prefix.empty() ? req.prompt : (conv_prefix + "User: " + req.prompt);
 
+    // Check for single-engine specialized or simple factual categories (Stage 2.5 & Stage 3)
+    if (plan.query_category == QueryCategory::MODEL_METADATA_INSPECTION ||
+        plan.query_category == QueryCategory::STATIC_COMPLEXITY_ONLY) {
+        CollaborativeTask t_col;
+        t_col.task_id = "task_1_colibri";
+        t_col.task_type = (plan.query_category == QueryCategory::MODEL_METADATA_INSPECTION)
+                              ? TaskType::VERIFICATION_AND_SUMMARY
+                              : TaskType::COMPLEXITY_AND_OPTIMIZATION;
+        t_col.description = (plan.query_category == QueryCategory::MODEL_METADATA_INSPECTION)
+                                ? "Deterministic GGUF metadata and architecture header inspection"
+                                : "Deterministic static control-flow and loop complexity analysis";
+        t_col.input_context = full_query;
+        t_col.required_capabilities = EngineCapabilitySet{
+            EngineCapability::TEXT_GENERATION,
+            EngineCapability::BACKEND_CPU
+        };
+        t_col.estimated_memory_bytes = model_profile.colibri_estimated_bytes;
+        std::string eng_reason, hw_reason;
+        t_col.assigned_engine = selectEngineForTask(t_col.task_type, model_profile, eng_reason);
+        t_col.assigned_backend = selectHardwareBackendForEngine(
+            t_col.assigned_engine, model_profile, hw, req.preferred_gpu_backend,
+            false, t_col.orchestrator_backend_id, hw_reason);
+        t_col.assignment_reason = eng_reason + " | " + hw_reason;
+        t_col.rejected_candidates.push_back("hydroxl: skipped (neural weight loading unnecessary for deterministic static/metadata inspection)");
+        t_col.rejected_candidates.push_back("llama.cpp: skipped (neural weight loading unnecessary for deterministic static/metadata inspection)");
+        t_col.wave_index = 0;
+        t_col.state = TaskState::READY;
+        plan.tasks = {t_col};
+        plan.waves = {{t_col.task_id}};
+        plan.memory_constrained_mode = false;
+        plan.plan_summary = "Category=" + std::string(queryCategoryToString(plan.query_category)) +
+                            ", Tasks=1, Waves=1, MemoryMode=SingleEngineLightweight";
+        return plan;
+    }
+
+    if (plan.query_category == QueryCategory::SIMPLE_FACTUAL_QA) {
+        CollaborativeTask t_qa;
+        t_qa.task_id = "task_1_primary_qa";
+        t_qa.task_type = TaskType::CONCEPTUAL_EXPLANATION;
+        t_qa.description = "Direct factual question answering";
+        t_qa.input_context = full_query;
+        t_qa.required_capabilities = EngineCapabilitySet{
+            EngineCapability::TEXT_GENERATION,
+            EngineCapability::BACKEND_CPU
+        };
+        std::string eng_reason, hw_reason;
+        t_qa.assigned_engine = selectEngineForTask(t_qa.task_type, model_profile, eng_reason);
+        t_qa.estimated_memory_bytes = (t_qa.assigned_engine == EngineId::HYDROXL)
+                                          ? model_profile.hydroxl_estimated_bytes
+                                          : model_profile.llamacpp_estimated_bytes;
+        t_qa.assigned_backend = selectHardwareBackendForEngine(
+            t_qa.assigned_engine, model_profile, hw, req.preferred_gpu_backend,
+            false, t_qa.orchestrator_backend_id, hw_reason);
+        t_qa.assignment_reason = eng_reason + " | " + hw_reason;
+        if (t_qa.assigned_engine == EngineId::HYDROXL) {
+            t_qa.rejected_candidates.push_back("llama.cpp: skipped (single factual lookup satisfied by primary engine)");
+        } else {
+            t_qa.rejected_candidates.push_back("hydroxl: rejected (" + eng_reason + ")");
+        }
+        t_qa.rejected_candidates.push_back("colibri: skipped (no structural code or multi-engine cross-verification required)");
+        t_qa.wave_index = 0;
+        t_qa.state = TaskState::READY;
+        plan.tasks = {t_qa};
+        plan.waves = {{t_qa.task_id}};
+        plan.memory_constrained_mode = false;
+        plan.plan_summary = "Category=" + std::string(queryCategoryToString(plan.query_category)) +
+                            ", Tasks=1, Waves=1, MemoryMode=SingleEngineFactual";
+        return plan;
+    }
+
     // Define the 3 collaborative tasks tailored to the query category
     CollaborativeTask t1;
     t1.task_id = "task_1_hydroxl";
@@ -261,9 +348,14 @@ PartitionPlan WorkloadPartitioner::createPlan(
             break;
     }
 
-    // Step 1: Engine selection (kept distinct from hardware backend selection)
+    //Step 1: Engine selection (kept distinct from hardware backend selection)
     std::string eng_reason1, eng_reason2, eng_reason3;
     t1.assigned_engine = selectEngineForTask(t1.task_type, model_profile, eng_reason1);
+    if (req.n_ctx > 2048 && t1.assigned_engine == EngineId::HYDROXL) {
+        t1.assigned_engine = EngineId::LLAMA_CPP;
+        eng_reason1 = "requested context window n_ctx=" + std::to_string(req.n_ctx) +
+                      " exceeds HydroXL default KV allocation limit (2048); reassigned to llama.cpp";
+    }
     t2.assigned_engine = selectEngineForTask(t2.task_type, model_profile, eng_reason2);
     t3.assigned_engine = selectEngineForTask(t3.task_type, model_profile, eng_reason3);
 
@@ -278,16 +370,27 @@ PartitionPlan WorkloadPartitioner::createPlan(
         gpu_claimed_wave0 = true;
     }
     t1.assignment_reason = eng_reason1 + " | " + hw_reason1;
+    if (t1.assigned_engine != EngineId::HYDROXL) {
+        t1.rejected_candidates.push_back("hydroxl: rejected (" + eng_reason1 + ")");
+    }
+    if (t1.assigned_backend == HardwareBackend::CPU && hw.has_vulkan()) {
+        t1.rejected_candidates.push_back("Vulkan: not selected for Task 1 (" + hw_reason1 + ")");
+    }
+    t1.rejected_candidates.push_back("colibri: not selected for primary neural generation");
 
     t2.assigned_backend = selectHardwareBackendForEngine(
         t2.assigned_engine, model_profile, hw, req.preferred_gpu_backend,
         gpu_claimed_wave0, t2.orchestrator_backend_id, hw_reason2);
     t2.assignment_reason = eng_reason2 + " | " + hw_reason2;
+    if (t2.assigned_backend == HardwareBackend::CPU && gpu_claimed_wave0) {
+        t2.rejected_candidates.push_back("GPU: rejected for Task 2 to avoid concurrent wave GPU contention with Task 1");
+    }
 
     t3.assigned_backend = selectHardwareBackendForEngine(
         t3.assigned_engine, model_profile, hw, req.preferred_gpu_backend,
         false, t3.orchestrator_backend_id, hw_reason3);
     t3.assignment_reason = eng_reason3 + " | " + hw_reason3;
+    t3.rejected_candidates.push_back("Vulkan/CUDA: Colibri executes deterministic static analysis on CPU only");
 
     plan.tasks = {t1, t2, t3};
 

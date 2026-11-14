@@ -284,6 +284,7 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
     if (max_new <= 0) max_new = 256;
 
     std::string output_text;
+    std::string utf8_pending;
 
     auto t_gen0 = std::chrono::steady_clock::now();
     for (int i = 0; i < max_new; ++i) {
@@ -305,12 +306,12 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
 
         generated_tokens.push_back(next_tok);
 
-        // Decode token to text
-        std::string piece = tokenizer_->decodeToken(next_tok);
+        // Decode token to text with streaming UTF-8 multibyte boundary protection
+        std::string piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
         output_text += piece;
 
         // Streaming callback
-        if (cb) cb(piece);
+        if (cb && !piece.empty()) cb(piece);
 
         // Forward pass for the new token
         if (!forward_pass_->forward(static_cast<uint32_t>(next_tok), pos, logits)) {
@@ -321,6 +322,7 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
         }
         ++pos;
     }
+    utf8_pending.clear();
     auto t_gen1 = std::chrono::steady_clock::now();
 
     // ---- Fill result ----

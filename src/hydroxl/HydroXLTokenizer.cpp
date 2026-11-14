@@ -567,7 +567,8 @@ std::string HydroXLTokenizer::decodeToken(TokenID id) const {
     if (tok_type_ == TokenizerType::LLAMA) {
         return decodeSentencePieceToken(vocab_[idx]);
     }
-    if (idx < token_type_.size() && (token_type_[idx] == 3 || token_type_[idx] == 5)) {
+    if (id == bos_id_ || id == eos_id_ ||
+        (idx < token_type_.size() && (token_type_[idx] == 3 || token_type_[idx] == 5))) {
         return vocab_[idx];
     }
     const std::string& mapped = vocab_[idx];
@@ -588,6 +589,70 @@ std::string HydroXLTokenizer::decodeToken(TokenID id) const {
         i += len;
     }
     return out;
+}
+
+std::string HydroXLTokenizer::decodeTokenStreaming(TokenID id,
+                                                   std::string& pending_utf8,
+                                                   bool skip_special) const {
+    if (id < 0 || static_cast<size_t>(id) >= vocab_.size()) return "";
+    size_t idx = static_cast<size_t>(id);
+    bool is_special = (id == bos_id_ || id == eos_id_) ||
+                      (idx < token_type_.size() && (token_type_[idx] == 3 || token_type_[idx] == 5));
+    if (is_special) {
+        if (skip_special) return "";
+        std::string flushed = std::move(pending_utf8);
+        pending_utf8.clear();
+        return flushed + vocab_[idx];
+    }
+
+    pending_utf8 += decodeToken(id);
+
+    // Find the longest prefix of complete UTF-8 codepoints in pending_utf8
+    size_t pos = 0;
+    const size_t n = pending_utf8.size();
+    while (pos < n) {
+        unsigned char lead = static_cast<unsigned char>(pending_utf8[pos]);
+        size_t seq_len = 1;
+        if ((lead & 0x80u) == 0x00u) {
+            seq_len = 1;
+        } else if ((lead & 0xE0u) == 0xC0u) {
+            seq_len = 2;
+        } else if ((lead & 0xF0u) == 0xE0u) {
+            seq_len = 3;
+        } else if ((lead & 0xF8u) == 0xF0u) {
+            seq_len = 4;
+        } else {
+            // Unexpected continuation/invalid lead byte: advance by 1
+            pos += 1;
+            continue;
+        }
+
+        if (pos + seq_len > n) {
+            // Verify trailing bytes so far are valid UTF-8 continuation bytes (10xxxxxx)
+            bool valid_partial = true;
+            for (size_t k = pos + 1; k < n; ++k) {
+                unsigned char cont = static_cast<unsigned char>(pending_utf8[k]);
+                if ((cont & 0xC0u) != 0x80u) {
+                    valid_partial = false;
+                    break;
+                }
+            }
+            if (valid_partial) {
+                // Incomplete multibyte sequence at the end of pending_utf8: keep buffered
+                break;
+            }
+            pos += 1;
+        } else {
+            pos += seq_len;
+        }
+    }
+
+    if (pos == 0) {
+        return "";
+    }
+    std::string ready = pending_utf8.substr(0, pos);
+    pending_utf8.erase(0, pos);
+    return ready;
 }
 
 std::string HydroXLTokenizer::decode(const std::vector<TokenID>& ids,
@@ -614,32 +679,14 @@ std::string HydroXLTokenizer::decode(const std::vector<TokenID>& ids,
         return out;
     }
 
-    std::string mapped;
+    std::string out;
+    std::string pending;
     for (TokenID id : ids) {
         if (id < 0 || static_cast<size_t>(id) >= vocab_.size()) continue;
-        size_t idx = static_cast<size_t>(id);
-        if (skip_special && idx < token_type_.size()) {
-            int t = token_type_[idx];
-            if (t == 3 || t == 5) continue;
-        }
-        mapped += vocab_[idx];
+        out += decodeTokenStreaming(id, pending, skip_special);
     }
-
-    std::string out;
-    out.reserve(mapped.size());
-    size_t i = 0;
-    while (i < mapped.size()) {
-        size_t len;
-        uint32_t cp = decodeUtf8(mapped, i, len);
-        (void)cp;
-        std::string ch = mapped.substr(i, len);
-        auto it = unicode_to_byte_.find(ch);
-        if (it != unicode_to_byte_.end()) {
-            out += static_cast<char>(it->second);
-        } else {
-            out += ch;
-        }
-        i += len;
+    if (!pending.empty()) {
+        out += pending;
     }
     return out;
 }

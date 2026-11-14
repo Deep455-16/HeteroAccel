@@ -58,6 +58,12 @@ public:
     size_t availableRamBytes() const;
     size_t effectiveBudgetBytes() const;
 
+    /// Queries the OS for the current process working-set (resident) memory in bytes.
+    static size_t currentProcessResidentBytes();
+
+    /// Queries the OS for the peak process working-set (resident) memory in bytes.
+    static size_t peakProcessResidentBytes();
+
     /// Returns true if HydroXL and llama.cpp can both hold the model resident in
     /// RAM simultaneously within the effective budget.
     bool canKeepConcurrentNeuralEngines(const ModelMemoryProfile& profile) const;

@@ -377,3 +377,9 @@ agr_add_test(test_p31_resource_memory_pressure   test_p31_resource_memory_pressu
 agr_add_test(test_p31_e2e_unified_cli_sdk        test_p31_e2e_unified_cli_sdk.cpp)
 target_link_libraries(test_p31_e2e_unified_cli_sdk PRIVATE agr_sdk)
 set_tests_properties(test_p31_e2e_unified_cli_sdk PROPERTIES TIMEOUT 300)
+
+# Phase 32 - Final Execution, Cross-Validation, Stabilization & Release
+agr_add_test(test_p32_release_validation         test_p32_release_validation.cpp)
+target_link_libraries(test_p32_release_validation PRIVATE agr_sdk)
+set_tests_properties(test_p32_release_validation PROPERTIES TIMEOUT 300)
+

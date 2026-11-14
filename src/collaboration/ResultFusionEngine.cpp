@@ -87,6 +87,62 @@ std::string detectComplexityClaim(const std::string& lower) {
     return "";
 }
 
+float sanitizeConfidence(float c) {
+    if (std::isnan(c) || std::isinf(c)) return 0.0f;
+    if (c < 0.0f) return 0.0f;
+    if (c > 1.0f) return 1.0f;
+    return c;
+}
+
+bool isRepetitiveOutput(const std::string& text) {
+    if (text.size() >= 12) {
+        size_t run = 1;
+        for (size_t i = 1; i < text.size(); ++i) {
+            if (!std::isspace(static_cast<unsigned char>(text[i])) && text[i] == text[i - 1]) {
+                if (++run >= 12) return true;
+            } else {
+                run = 1;
+            }
+        }
+    }
+    std::istringstream iss(toLowerCopy(text));
+    std::vector<std::string> words;
+    std::string w;
+    while (iss >> w) {
+        words.push_back(w);
+    }
+    if (words.size() >= 6) {
+        std::set<std::string> uniq(words.begin(), words.end());
+        if (uniq.size() * 4 <= words.size()) {
+            return true;
+        }
+        // Check consecutive identical words >= 4
+        size_t word_run = 1;
+        for (size_t i = 1; i < words.size(); ++i) {
+            if (words[i] == words[i - 1]) {
+                if (++word_run >= 4) return true;
+            } else {
+                word_run = 1;
+            }
+        }
+    }
+    return false;
+}
+
+bool isMalformedOutput(const std::string& text) {
+    // Check UTF-8 replacement character U+FFFD (\xEF\xBF\xBD) or explicit BEL corruption
+    if (text.find("\xEF\xBF\xBD") != std::string::npos) return true;
+    if (text.find('\x07') != std::string::npos) return true;
+    // Check severely unclosed braces (e.g., "{{{")
+    int brace_depth = 0;
+    for (char c : text) {
+        if (c == '{') ++brace_depth;
+        else if (c == '}') --brace_depth;
+    }
+    if (brace_depth >= 3) return true;
+    return false;
+}
+
 } // namespace
 
 float ResultFusionEngine::computeSimilarity(const std::string& a, const std::string& b) {
@@ -162,7 +218,15 @@ void ResultFusionEngine::enrichIntermediateResult(
         result.supporting_evidence.push_back(ev.str());
     }
 
-    if (result.confidence_score <= 0.0f) {
+    bool had_invalid_confidence = std::isnan(result.confidence_score) ||
+                                  std::isinf(result.confidence_score) ||
+                                  result.confidence_score < 0.0f ||
+                                  result.confidence_score > 1.0f;
+    if (std::isnan(result.confidence_score) || std::isinf(result.confidence_score) || result.confidence_score < 0.0f) {
+        result.confidence_score = 0.0f;
+    } else if (result.confidence_score > 1.0f) {
+        result.confidence_score = 1.0f;
+    } else if (result.confidence_score == 0.0f) {
         if (task.assigned_engine == EngineId::COLIBRI) {
             result.confidence_score = 0.92f;
         } else if (task.assigned_engine == EngineId::HYDROXL) {
@@ -172,12 +236,27 @@ void ResultFusionEngine::enrichIntermediateResult(
         }
     }
 
-    result.validated = (text.find("WARNING") == std::string::npos &&
-                        text.find("Unmatched") == std::string::npos &&
-                        text.find("Unclosed") == std::string::npos);
-    result.validation_notes = result.validated
-                                  ? "Output verified against structural and task constraints"
-                                  : "Static verification flagged structural or syntax warnings";
+    bool repetitive = isRepetitiveOutput(text);
+    bool malformed = isMalformedOutput(text);
+    bool structural_warn = (text.find("WARNING") != std::string::npos ||
+                            text.find("Unmatched") != std::string::npos ||
+                            text.find("Unclosed") != std::string::npos);
+
+    if (repetitive) {
+        result.validated = false;
+        result.confidence_score = std::min(result.confidence_score, 0.20f);
+        result.validation_notes = "Repetitive degenerate output detected";
+    } else if (malformed || structural_warn) {
+        result.validated = false;
+        result.confidence_score = std::min(result.confidence_score, 0.35f);
+        result.validation_notes = "Static verification flagged malformed or structural syntax warnings";
+    } else if (had_invalid_confidence && result.confidence_score == 0.0f) {
+        result.validated = false;
+        result.validation_notes = "Invalid confidence score (NaN or negative) clamped to 0.0";
+    } else {
+        result.validated = true;
+        result.validation_notes = "Output verified against structural and task constraints";
+    }
 }
 
 FusionReport ResultFusionEngine::fuse(
@@ -202,6 +281,7 @@ FusionReport ResultFusionEngine::fuse(
         std::string engine_id;
         float confidence = 0.0f;
         TaskType task_type;
+        bool validated = true;
     };
     std::vector<TaggedFinding> all_findings;
 
@@ -218,27 +298,40 @@ FusionReport ResultFusionEngine::fuse(
         cs.tasks_assigned += 1;
 
         if (t.state == TaskState::COMPLETED && t.output.success) {
+            bool raw_invalid_conf = std::isnan(t.output.confidence_score) ||
+                                    std::isinf(t.output.confidence_score) ||
+                                    t.output.confidence_score < 0.0f ||
+                                    t.output.confidence_score > 1.0f;
+            float clean_conf = sanitizeConfidence(t.output.confidence_score);
+            bool task_validated = t.output.validated && !raw_invalid_conf;
+            std::string trimmed_res = trimCopy(t.output.structured_result);
+            if (isRepetitiveOutput(trimmed_res) || isMalformedOutput(trimmed_res)) {
+                task_validated = false;
+                clean_conf = std::min(clean_conf, 0.25f);
+            }
+
             cs.tasks_completed += 1;
             cs.primary_backend_used = t.output.backend_used.empty()
                                           ? std::string(hardwareBackendToString(t.assigned_backend))
                                           : t.output.backend_used;
             cs.total_tokens_generated += t.output.tokens_generated;
             cs.total_execution_ms += t.output.execution_ms;
-            cs.average_confidence += t.output.confidence_score;
+            cs.average_confidence += clean_conf;
             if (t.output.peak_memory_bytes > cs.peak_memory_bytes) {
                 cs.peak_memory_bytes = t.output.peak_memory_bytes;
             }
 
-            if (!t.output.validated) {
+            if (!task_validated) {
                 all_validated = false;
             }
-            confidence_sum += t.output.confidence_score;
+            confidence_sum += clean_conf;
             ++completed_tasks;
 
             for (const auto& f : t.output.key_findings) {
                 std::string clean = trimCopy(f);
-                if (!clean.empty()) {
-                    all_findings.push_back({clean, eid, t.output.confidence_score, t.task_type});
+                if (!clean.empty() && !isRepetitiveOutput(clean) && !isMalformedOutput(clean)) {
+                    float f_conf = task_validated ? clean_conf : std::min(clean_conf, 0.30f);
+                    all_findings.push_back({clean, eid, f_conf, t.task_type, task_validated});
                 }
             }
             for (const auto& ev : t.output.supporting_evidence) {
@@ -292,19 +385,25 @@ FusionReport ResultFusionEngine::fuse(
         }
     }
 
+    std::string colibri_authoritative_complexity;
+    if (engine_complexity_claims.count("colibri") > 0) {
+        colibri_authoritative_complexity = engine_complexity_claims["colibri"];
+    }
+
     if (engine_complexity_claims.size() >= 2) {
         std::string first_eng = engine_complexity_claims.begin()->first;
         std::string first_val = engine_complexity_claims.begin()->second;
         for (const auto& kv : engine_complexity_claims) {
             if (kv.second != first_val) {
                 ++report.conflicts_detected;
-                std::string authoritative = engine_complexity_claims.count("colibri")
-                                                ? engine_complexity_claims["colibri"]
+                std::string authoritative = !colibri_authoritative_complexity.empty()
+                                                ? colibri_authoritative_complexity
                                                 : kv.second;
                 report.resolved_conflicts.push_back(
                     "Complexity estimate divergence between " + first_eng + " (" + first_val +
                     ") and " + kv.first + " (" + kv.second +
-                    ") resolved in favor of static control-flow bound " + authoritative + ".");
+                    ") resolved in favor of static control-flow bound " + authoritative +
+                    " (structural proof overrides majority heuristic voting).");
                 report.preserved_disagreements.push_back(
                     first_eng + " reported " + first_val + " (average/best-case path) while " +
                     kv.first + " reported " + kv.second + " (worst-case structural bound).");
@@ -324,26 +423,40 @@ FusionReport ResultFusionEngine::fuse(
             race_risk_engine + " highlighted multi-stage lock contention risk.");
     }
 
-    // 3. Deduplicate overlapping findings and rank by confidence
+    // 3. Deduplicate overlapping findings and rank by confidence & structural proof
+    //    (Never allow 2-vs-1 neural majority voting to override Colibri structural proof)
     struct MergedFinding {
         std::string text;
         std::vector<std::string> engines;
         float best_confidence = 0.0f;
+        bool is_structural_proof = false;
+        bool disputed_by_structural_proof = false;
+        bool validated = true;
     };
     std::vector<MergedFinding> merged;
 
     for (const auto& tf : all_findings) {
+        std::string lower = toLowerCopy(tf.text);
+        std::string comp = detectComplexityClaim(lower);
+        bool is_colibri_proof = (tf.engine_id == "colibri" && !comp.empty());
+        bool disputed = (!colibri_authoritative_complexity.empty() &&
+                         !comp.empty() &&
+                         comp != colibri_authoritative_complexity);
+
         bool found_match = false;
         for (auto& m : merged) {
             float sim = computeSimilarity(tf.text, m.text);
-            if (sim >= 0.55f) {
+            if (sim >= 0.55f && m.disputed_by_structural_proof == disputed) {
                 found_match = true;
                 if (std::find(m.engines.begin(), m.engines.end(), tf.engine_id) == m.engines.end()) {
                     m.engines.push_back(tf.engine_id);
                 }
+                if (is_colibri_proof) {
+                    m.is_structural_proof = true;
+                }
+                m.validated = m.validated && tf.validated;
                 if (tf.confidence > m.best_confidence) {
                     m.best_confidence = tf.confidence;
-                    // Prefer the more detailed phrasing when confidence is higher
                     if (tf.text.size() > m.text.size()) {
                         m.text = tf.text;
                     }
@@ -355,14 +468,30 @@ FusionReport ResultFusionEngine::fuse(
             MergedFinding mf;
             mf.text = tf.text;
             mf.engines.push_back(tf.engine_id);
-            mf.best_confidence = tf.confidence;
+            mf.best_confidence = disputed ? std::min(tf.confidence, 0.35f) : tf.confidence;
+            mf.is_structural_proof = is_colibri_proof;
+            mf.disputed_by_structural_proof = disputed;
+            mf.validated = tf.validated;
             merged.push_back(std::move(mf));
         }
     }
 
-    // Sort merged findings: multi-engine corroborated findings and higher confidence first
+    // Sort merged findings:
+    //  1) Undisputed findings before findings disputed by structural proof
+    //  2) Validated findings before unvalidated findings
+    //  3) Authoritative Colibri structural proofs before heuristic claims when conflict exists
+    //  4) Multi-engine corroboration and higher confidence
     std::stable_sort(merged.begin(), merged.end(),
                      [](const MergedFinding& a, const MergedFinding& b) {
+                         if (a.disputed_by_structural_proof != b.disputed_by_structural_proof) {
+                             return !a.disputed_by_structural_proof;
+                         }
+                         if (a.validated != b.validated) {
+                             return a.validated;
+                         }
+                         if (a.is_structural_proof != b.is_structural_proof) {
+                             return a.is_structural_proof;
+                         }
                          if (a.engines.size() != b.engines.size()) {
                              return a.engines.size() > b.engines.size();
                          }
@@ -375,13 +504,18 @@ FusionReport ResultFusionEngine::fuse(
             if (i > 0) tag << "+";
             tag << m.engines[i];
         }
-        report.deduplicated_findings.push_back("[" + tag.str() + "] " + m.text);
+        std::string entry = "[" + tag.str() + "] " + m.text;
+        if (m.disputed_by_structural_proof && !colibri_authoritative_complexity.empty()) {
+            entry += " [Disputed: overridden by Colibri structural bound " +
+                     colibri_authoritative_complexity + "]";
+        }
+        report.deduplicated_findings.push_back(entry);
     }
 
     report.deduplicated_findings_count = static_cast<int>(report.deduplicated_findings.size());
     report.validation_passed = all_validated && (completed_tasks > 0);
     report.overall_confidence = completed_tasks > 0
-                                    ? (confidence_sum / static_cast<float>(completed_tasks))
+                                    ? sanitizeConfidence(confidence_sum / static_cast<float>(completed_tasks))
                                     : 0.0f;
 
     // 4. Synthesize one coherent, unified final response (never raw concatenation)
@@ -423,6 +557,8 @@ FusionReport ResultFusionEngine::fuse(
         synth << "   - [Primary Reasoning (HydroXL)]: " << hydroxl_text << "\n";
     } else if (!llamacpp_text.empty()) {
         synth << "   - [Compatibility Synthesis (llama.cpp)]: " << llamacpp_text << "\n";
+    } else if (!colibri_highlights.empty()) {
+        synth << "   - [Direct Structural & Metadata Inspection (Colibri)]: Executed deterministically without redundant neural LLM invocation.\n";
     }
 
     // Section 2: Colibri Complexity, Optimization & Verification Findings

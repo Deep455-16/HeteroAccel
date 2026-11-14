@@ -325,20 +325,43 @@ void printUsage() {
     std::cout << "    --gpu-layers <N>    GPU layers for Vulkan run (default: 99)\n";
     std::cout << "    --max-tokens <N>    Token limit (default: 64)\n\n";
     std::cout << "  Set HETEROACCEL_MODEL_PATH env var as an alternative to --model.\n\n";
-    std::cout << "Phase 7 commands:\n";
-    std::cout << "  adaptive-gpu run --model <path.gguf> --prompt \"...\" [opts]  Auto-scheduled inference\n";
-    std::cout << "  adaptive-gpu chat --model <path.gguf>                       Interactive auto-scheduled chat\n\n";
+    std::cout << "Phase 7 & Unified Collaborative Multi-Engine commands:\n";
+    std::cout << "  adaptive-gpu collaborate --model <path.gguf> --prompt \"...\" [options]\n";
+    std::cout << "    --max-tokens <N>          Max new tokens per engine task (default: 24)\n";
+    std::cout << "    --gpu-backend <backend>   Preferred GPU backend (auto|vulkan|cuda|cpu)\n";
+    std::cout << "    --memory-budget-mb <MB>   Max RAM budget in MB for collaborative execution\n";
+    std::cout << "    --n-ctx <N>               Context window length (default: 512)\n";
+    std::cout << "    --sequential              Force sequential wave execution\n";
+    std::cout << "  adaptive-gpu run --model <path.gguf> --prompt \"...\" [--collaborate|--single-engine]\n";
+    std::cout << "  adaptive-gpu chat --model <path.gguf> [--collaborate|--single-engine]\n\n";
     std::cout << "Phase 12 commands:\n";
     std::cout << "  adaptive-gpu analyze <path.gguf>                            Phase 12 capability analysis\n\n";
     std::cout << "Phase 13 commands:\n";
     std::cout << "  adaptive-gpu plan <path.gguf>                               Phase 13 execution plan\n\n";
-    std::cout << "Phase 17 commands:\n";
-    std::cout << "  adaptive-gpu hydroxl --model <path.gguf> [options]          Phase 17 HydroXL native inference engine\n\n";
+    std::cout << "Phase 17 & 25 commands:\n";
+    std::cout << "  adaptive-gpu hydroxl --model <path.gguf> [options]          Phase 17 HydroXL native inference engine\n";
+    std::cout << "  adaptive-gpu infer --model <path.gguf> [options]            Phase 25 Orchestrated inference\n\n";
     std::cout << "Diagnostics:\n";
     std::cout << "  adaptive-gpu devices               Hardware discovery + auto backend selection\n";
     std::cout << "  adaptive-gpu memory                Unified Memory Manager stats\n";
     std::cout << "  adaptive-gpu scheduler             Adaptive Heterogeneous Scheduler benchmark\n";
     std::cout << "  adaptive-gpu --help                Show this message\n";
+}
+
+void printCollaborateUsage() {
+    std::cout << "adaptive-gpu collaborate - Unified Collaborative Multi-Engine Inference\n"
+              << "Coordinates HydroXL (native), llama.cpp (compatibility), and Colibri (verification)\n\n"
+              << "Usage:\n"
+              << "  adaptive-gpu collaborate --model <path.gguf> --prompt \"<query>\" [options]\n\n"
+              << "Options:\n"
+              << "  --model <path.gguf>       Path to GGUF model (or set HETEROACCEL_MODEL_PATH)\n"
+              << "  --prompt <text>           User prompt to decompose and execute collaboratively\n"
+              << "  --max-tokens <N>          Maximum tokens generated per engine task (default: 24)\n"
+              << "  --gpu-backend <name>      Preferred GPU backend: auto, vulkan, cuda, cpu\n"
+              << "  --memory-budget-mb <MB>   Override maximum RAM budget in MB\n"
+              << "  --n-ctx <N>               Context window length (default: 512)\n"
+              << "  --sequential              Execute tasks sequentially instead of parallel waves\n"
+              << "  --help, -h                Show this help message\n";
 }
 
 int runDevicesCommand() {
@@ -513,14 +536,20 @@ int runCollaborateCommand(const std::vector<std::string>& args) {
     std::string gpu_backend;
     int max_tokens = 24;
     int budget_mb = 0;
+    int n_ctx = 512;
     bool sequential = false;
 
     for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--help" || args[i] == "-h") {
+            printCollaborateUsage();
+            return 0;
+        }
         if (parseStringArg(args, i, "--model",       model_path))  continue;
         if (parseStringArg(args, i, "--prompt",      prompt))      continue;
         if (parseStringArg(args, i, "--gpu-backend", gpu_backend)) continue;
         if (parseIntArg(args, i,    "--max-tokens",  max_tokens))  continue;
         if (parseIntArg(args, i,    "--memory-budget-mb", budget_mb)) continue;
+        if (parseIntArg(args, i,    "--n-ctx",       n_ctx))       continue;
         if (args[i] == "--sequential") { sequential = true; continue; }
     }
 
@@ -535,6 +564,14 @@ int runCollaborateCommand(const std::vector<std::string>& args) {
         return 1;
     }
 
+    {
+        std::ifstream fcheck(model_path, std::ios::binary);
+        if (!fcheck.good()) {
+            std::cerr << "ERROR: Model file not found or unreadable: " << model_path << "\n";
+            return 1;
+        }
+    }
+
     agr::HeteroRuntime runtime;
     if (!runtime.initialize()) {
         std::cerr << "ERROR: Failed to initialize HeteroRuntime\n";
@@ -545,6 +582,7 @@ int runCollaborateCommand(const std::vector<std::string>& args) {
     creq.model_path = model_path;
     creq.prompt = prompt;
     creq.max_new_tokens_per_task = max_tokens;
+    creq.n_ctx = n_ctx;
     creq.allow_parallel_waves = !sequential;
     creq.preferred_gpu_backend = gpu_backend;
     if (budget_mb > 0) {
@@ -563,6 +601,9 @@ int runCollaborateCommand(const std::vector<std::string>& args) {
     };
 
     auto cres = runtime.generateCollaborativeStreaming(creq, cb);
+    if (!cres.success) {
+        std::cerr << "ERROR: Collaborative execution failed: " << cres.error << "\n";
+    }
     std::cout << "\n" << cres.formatTelemetryReport() << "\n";
 
     runtime.shutdown();
@@ -576,11 +617,15 @@ int runInferenceCommand(const std::vector<std::string>& args) {
     bool single_engine = false;
 
     for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--help" || args[i] == "-h") {
+            printCollaborateUsage();
+            return 0;
+        }
         if (parseStringArg(args, i, "--model",      model_path))  continue;
         if (parseStringArg(args, i, "--prompt",     prompt))      continue;
         if (parseIntArg(args, i,    "--max-tokens", opts.max_tokens)) continue;
         if (args[i] == "--single-engine") { single_engine = true; continue; }
-        if (args[i] == "--collaborative") { single_engine = false; continue; }
+        if (args[i] == "--collaborate" || args[i] == "--collaborative") { single_engine = false; continue; }
     }
 
     if (!single_engine) {
@@ -647,10 +692,14 @@ int runChatCommand(const std::vector<std::string>& args) {
     bool collaborative_mode = true;
 
     for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--help" || args[i] == "-h") {
+            std::cout << "Usage: adaptive-gpu chat --model <path.gguf> [--collaborate|--single-engine] [--max-tokens <N>]\n";
+            return 0;
+        }
         if (parseStringArg(args, i, "--model",      model_path))  continue;
         if (parseIntArg(args, i,    "--max-tokens", opts.max_tokens)) continue;
         if (args[i] == "--single-engine") { collaborative_mode = false; continue; }
-        if (args[i] == "--collaborative") { collaborative_mode = true; continue; }
+        if (args[i] == "--collaborate" || args[i] == "--collaborative") { collaborative_mode = true; continue; }
     }
 
     if (model_path.empty()) {
@@ -1093,7 +1142,7 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
     std::cout << "---------------------------------------------\n";
 
     orchestration::InferenceRequest ireq;
-    // Pass prompt text via a single placeholder token; actual generation uses internal BPE
+    ireq.prompt = prompt;
     ireq.max_new_tokens = max_tokens;
     ireq.temperature = 0.8f;
     ireq.top_p = 0.95f;
@@ -1140,8 +1189,61 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
 
     return 0;
 }
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
+#if defined(_WIN32)
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+    // Parse wide command line directly into UTF-8 to preserve non-ASCII (Hindi, Emoji, Math) on Windows
+    const wchar_t* wcmd = GetCommandLineW();
+    if (wcmd) {
+        std::vector<std::wstring> wargs;
+        size_t i = 0;
+        while (wcmd[i] != L'\0') {
+            while (wcmd[i] == L' ' || wcmd[i] == L'\t') ++i;
+            if (wcmd[i] == L'\0') break;
+            std::wstring cur;
+            bool in_quotes = false;
+            while (wcmd[i] != L'\0' && (in_quotes || (wcmd[i] != L' ' && wcmd[i] != L'\t'))) {
+                if (wcmd[i] == L'\\' && wcmd[i + 1] == L'"') {
+                    cur.push_back(L'"');
+                    i += 2;
+                } else if (wcmd[i] == L'"') {
+                    in_quotes = !in_quotes;
+                    ++i;
+                } else {
+                    cur.push_back(wcmd[i++]);
+                }
+            }
+            wargs.push_back(std::move(cur));
+        }
+        if (wargs.size() > 1) {
+            args.clear();
+            for (size_t k = 1; k < wargs.size(); ++k) {
+                const auto& ws = wargs[k];
+                if (ws.empty()) {
+                    args.emplace_back();
+                } else {
+                    int needed = WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()),
+                                                     nullptr, 0, nullptr, nullptr);
+                    std::string u8(needed > 0 ? needed : 0, '\0');
+                    if (needed > 0) {
+                        WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()),
+                                            &u8[0], needed, nullptr, nullptr);
+                    }
+                    args.push_back(std::move(u8));
+                }
+            }
+        }
+    }
+#endif
 
     if (args.empty() || args[0] == "--help" || args[0] == "-h") {
         printUsage();

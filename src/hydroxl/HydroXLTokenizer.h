@@ -64,6 +64,14 @@ public:
     /// Decode a single token ID. Returns empty string for invalid IDs.
     std::string decodeToken(TokenID id) const;
 
+    /// Stateful streaming token decoder: appends the raw decoded bytes of `id`
+    /// to `pending_utf8` and returns only complete UTF-8 codepoints. Any trailing
+    /// incomplete multibyte UTF-8 sequence remains buffered in `pending_utf8`
+    /// until continuation bytes arrive in subsequent tokens.
+    std::string decodeTokenStreaming(TokenID id,
+                                     std::string& pending_utf8,
+                                     bool skip_special = true) const;
+
     std::string lastError() const { return last_error_; }
 
 private:
