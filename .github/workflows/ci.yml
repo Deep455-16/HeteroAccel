@@ -21,7 +21,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022, macos-14]
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DHETEROACCEL_ENABLE_VULKAN=OFF -DHETEROACCEL_ENABLE_CUDA=OFF
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure --parallel 2
+
+  cpu-macos:
+    name: CPU-only (macos-14)
+    if: ${{ vars.ENABLE_MACOS_RUNNER == 'true' }}
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Configure
