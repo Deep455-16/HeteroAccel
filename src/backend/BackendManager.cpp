@@ -68,6 +68,7 @@ void BackendManager::discoverVulkan() {
     dev.vendor           = "Vulkan";
     dev.compute_score    = VULKAN_SCORE_BASE;
 
+#if AGR_HAVE_VULKAN
     // Query heap sizes via physicalDevice()
     VkPhysicalDevice pd = vulkan_.physicalDevice();
     if (pd != VK_NULL_HANDLE) {
@@ -90,6 +91,7 @@ void BackendManager::discoverVulkan() {
         dev.compute_score += static_cast<double>(dev.memory_capacity)
                            / (1024.0 * 1024.0 * 1024.0) * 10.0;
     }
+#endif
 
     devices_.push_back(std::move(dev));
 }
