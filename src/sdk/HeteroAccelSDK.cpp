@@ -13,6 +13,7 @@
 #include "hydroxl/HydroXLModel.h"
 #include "hydroxl/HydroXLTokenizer.h"
 #include "hydroxl/GGUFLoader.h"
+#include "collaboration/CollaborativeExecutionOrchestrator.h"
 
 #include <algorithm>
 #include <atomic>
@@ -75,6 +76,9 @@ struct HaSession_ {
     std::vector<int> last_output_token_ids;
     std::string last_backend_used;
     std::string last_error_message;
+    std::string last_telemetry_report;
+    std::string last_query_category;
+    agr::collaboration::CollaborativeExecutionOrchestrator collab_orch;
 };
 
 // ---------------------------------------------------------------------------
@@ -424,6 +428,9 @@ HaResult ha_infer(HaSession session, const HaInferParams* params) {
         req.top_p = (params->top_p > 0.0f) ? params->top_p : 0.95f;
         req.stream = false;
 
+        if (params->prompt && params->prompt[0] != '\0') {
+            req.prompt = params->prompt;
+        }
         if (params->token_ids && params->n_token_ids > 0) {
             req.prompt_token_ids.assign(params->token_ids, params->token_ids + params->n_token_ids);
         } else if (params->prompt && params->prompt[0] != '\0') {
@@ -534,6 +541,9 @@ HaError ha_infer_stream(HaSession session, const HaInferParams* params,
         req.top_p = (params->top_p > 0.0f) ? params->top_p : 0.95f;
         req.stream = true;
 
+        if (params->prompt && params->prompt[0] != '\0') {
+            req.prompt = params->prompt;
+        }
         if (params->token_ids && params->n_token_ids > 0) {
             req.prompt_token_ids.assign(params->token_ids, params->token_ids + params->n_token_ids);
         } else if (params->prompt && params->prompt[0] != '\0') {
@@ -689,4 +699,122 @@ const char* ha_error_string(HaError err) {
         case HA_ERR_INTERNAL:    return "Internal runtime error";
         default:                 return "Unknown error";
     }
+}
+
+HaError ha_collaborate_stream(HaSession session,
+                              const HaCollaborateParams* params,
+                              HaTokenCallback cb,
+                              void* user_data,
+                              HaCollaborateResult* result_out) {
+    HaCollaborateResult local_res = {};
+    local_res.error = HA_OK;
+    local_res.error_message = "";
+
+    if (!session || !params || !params->prompt || params->prompt[0] == '\0') {
+        local_res.error = HA_ERR_INVALID_ARG;
+        local_res.error_message = "Session or prompt is NULL or empty";
+        if (result_out) *result_out = local_res;
+        return HA_ERR_INVALID_ARG;
+    }
+
+    std::lock_guard<std::mutex> lk(session->mutex);
+    session->cancelled.store(false);
+
+    try {
+        agr::collaboration::CollaborativeRequest creq;
+        if (session->model) {
+            creq.model_path = session->model->path;
+        }
+        creq.prompt = params->prompt;
+        creq.max_new_tokens_per_task = (params->max_new_tokens > 0) ? params->max_new_tokens : 24;
+        creq.temperature = params->temperature;
+        creq.top_p = (params->top_p > 0.0f) ? params->top_p : 0.95f;
+        creq.max_ram_budget_bytes = params->max_ram_budget_bytes;
+        creq.allow_parallel_waves = (params->allow_parallel_waves != 0);
+        if (params->preferred_gpu_backend) {
+            creq.preferred_gpu_backend = params->preferred_gpu_backend;
+        }
+        creq.cancel_flag = &session->cancelled;
+
+        agr::collaboration::CollaborativeStreamCallback stream_cb = nullptr;
+        if (cb) {
+            stream_cb = [&](const std::string& chunk, int idx) -> bool {
+                if (session->cancelled.load()) return false;
+                int cancel = cb(chunk.c_str(), idx, user_data);
+                if (cancel != 0) {
+                    session->cancelled.store(true);
+                    return false;
+                }
+                return true;
+            };
+        }
+
+        agr::collaboration::CollaborativeResult cres =
+            session->collab_orch.executeStreaming(creq, stream_cb);
+
+        session->last_output_text = cres.unified_response;
+        session->last_telemetry_report = cres.formatTelemetryReport();
+        session->last_query_category = agr::collaboration::queryCategoryToString(cres.query_category);
+        session->last_error_message = cres.error;
+
+        local_res.unified_response = session->last_output_text.c_str();
+        local_res.telemetry_report = session->last_telemetry_report.c_str();
+        local_res.query_category = session->last_query_category.c_str();
+        local_res.n_tasks_total = static_cast<int>(cres.tasks.size());
+        int completed = 0;
+        for (const auto& t : cres.tasks) {
+            if (t.state == agr::collaboration::TaskState::COMPLETED && t.output.success) {
+                ++completed;
+            }
+        }
+        local_res.n_tasks_completed = completed;
+        local_res.n_waves = static_cast<int>(cres.execution_waves.size());
+        local_res.hydroxl_participated = cres.engineParticipated("hydroxl") ? 1 : 0;
+        local_res.llamacpp_participated = cres.engineParticipated("llama.cpp") ? 1 : 0;
+        local_res.colibri_participated = cres.engineParticipated("colibri") ? 1 : 0;
+        local_res.memory_constrained_mode = cres.resource_telemetry.memory_constrained_mode ? 1 : 0;
+        local_res.concurrent_wave_ran = cres.resource_telemetry.concurrent_wave_executed ? 1 : 0;
+        local_res.conflicts_detected = cres.fusion.conflicts_detected;
+        local_res.deduplicated_findings = cres.fusion.deduplicated_findings_count;
+        local_res.overall_confidence = cres.fusion.overall_confidence;
+        local_res.total_ms = cres.total_ms;
+
+        if (!cres.success) {
+            local_res.error = (cres.error.find("Cancel") != std::string::npos)
+                                  ? HA_ERR_CANCELLED
+                                  : HA_ERR_INFERENCE;
+            local_res.error_message = session->last_error_message.c_str();
+            if (result_out) *result_out = local_res;
+            return local_res.error;
+        }
+
+        local_res.error = HA_OK;
+        local_res.error_message = "";
+        if (result_out) *result_out = local_res;
+        return HA_OK;
+    } catch (const std::bad_alloc&) {
+        session->last_error_message = "Out of memory during collaborative inference";
+        local_res.error = HA_ERR_OOM;
+        local_res.error_message = session->last_error_message.c_str();
+        if (result_out) *result_out = local_res;
+        return HA_ERR_OOM;
+    } catch (const std::exception& e) {
+        session->last_error_message = e.what();
+        local_res.error = HA_ERR_INTERNAL;
+        local_res.error_message = session->last_error_message.c_str();
+        if (result_out) *result_out = local_res;
+        return HA_ERR_INTERNAL;
+    } catch (...) {
+        session->last_error_message = "Unknown error during collaborative inference";
+        local_res.error = HA_ERR_INTERNAL;
+        local_res.error_message = session->last_error_message.c_str();
+        if (result_out) *result_out = local_res;
+        return HA_ERR_INTERNAL;
+    }
+}
+
+HaCollaborateResult ha_collaborate(HaSession session, const HaCollaborateParams* params) {
+    HaCollaborateResult res = {};
+    ha_collaborate_stream(session, params, nullptr, nullptr, &res);
+    return res;
 }

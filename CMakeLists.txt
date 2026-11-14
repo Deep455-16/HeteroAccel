@@ -453,6 +453,7 @@ target_include_directories(agr_inference PUBLIC
 )
 
 target_link_libraries(agr_inference PUBLIC
+    agr_orchestration
     agr_model
     agr_residency
     agr_execution
@@ -688,12 +689,23 @@ add_custom_command(
 # Phase 21: Universal Hardware-Aware Engine Orchestration
 # =============================================================================
 
-file(GLOB ORCHESTRATION_SRCS
-    src/orchestration/*.cpp
+set(ORCHESTRATION_SRCS
+    src/orchestration/EngineOrchestrator.cpp
+    src/orchestration/HardwareDetector.cpp
+    src/orchestration/HydroXLEngineAdapter.cpp
+    src/orchestration/LlamaCppEngineAdapter.cpp
+    src/orchestration/MemoryEstimator.cpp
+    src/orchestration/OrchestratorInit.cpp
+    src/orchestration/PerfProfile.cpp
 )
 
 add_library(agr_orchestration STATIC
     ${ORCHESTRATION_SRCS}
+    src/colibri/ColibriEngine.cpp
+    src/collaboration/CollaborativeResourceManager.cpp
+    src/collaboration/WorkloadPartitioner.cpp
+    src/collaboration/ResultFusionEngine.cpp
+    src/collaboration/CollaborativeExecutionOrchestrator.cpp
 )
 
 target_include_directories(agr_orchestration PUBLIC
@@ -702,10 +714,14 @@ target_include_directories(agr_orchestration PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/hydroxl
     ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin
     ${CMAKE_CURRENT_SOURCE_DIR}/src/engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/colibri
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/collaboration
 )
 
 target_link_libraries(agr_orchestration PUBLIC
     agr_hydroxl
+    agr_execution
+    agr_engine
     agr_llm
     agr_core
     agr_plugin

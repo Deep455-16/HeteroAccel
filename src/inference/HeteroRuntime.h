@@ -31,6 +31,7 @@
 #include "scheduler/WorkloadRegistry.h"
 #include "scheduler/ExecutionPolicyEngine.h"
 #include "scheduler/Phase9Telemetry.h"
+#include "collaboration/CollaborativeExecutionOrchestrator.h"
 
 #include <atomic>
 #include <memory>
@@ -114,6 +115,18 @@ public:
                                      WorkloadPriority priority = WorkloadPriority::NORMAL,
                                      WorkloadClass wclass = WorkloadClass::DEFAULT);
 
+    // Collaborative Multi-Engine Runtime (HydroXL + llama.cpp + Colibri)
+    collaboration::CollaborativeResult generateCollaborative(
+        const collaboration::CollaborativeRequest& req);
+
+    collaboration::CollaborativeResult generateCollaborativeStreaming(
+        const collaboration::CollaborativeRequest& req,
+        collaboration::CollaborativeStreamCallback cb);
+
+    collaboration::CollaborativeExecutionOrchestrator& collaborativeOrchestrator() {
+        return collaborativeOrch_;
+    }
+
 private:
     /// Determine n_gpu_layers and cpu_only based on scheduler decision, model size, and pressure.
     /// Will reload the backend if configuration changes significantly (e.g. GPU -> CPU fallback).
@@ -153,6 +166,7 @@ private:
     // Loaded model backends, keyed by model path
     std::unordered_map<std::string, std::shared_ptr<IExecutionEngine>> engines_;
     std::unordered_map<std::string, TuningConfig> loaded_configs_;
+    collaboration::CollaborativeExecutionOrchestrator collaborativeOrch_;
 };
 
 } // namespace agr

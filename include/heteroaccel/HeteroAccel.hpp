@@ -81,6 +81,50 @@ struct MemoryEstimate {
     std::string notes;
 };
 
+struct CollaborateParams {
+    std::string prompt;
+    int max_new_tokens = 24;
+    float temperature = 0.0f;
+    float top_p = 0.95f;
+    size_t max_ram_budget_bytes = 0;
+    bool allow_parallel_waves = true;
+    std::string preferred_gpu_backend;
+
+    HaCollaborateParams to_c_params() const {
+        HaCollaborateParams p = {};
+        p.prompt = prompt.empty() ? nullptr : prompt.c_str();
+        p.max_new_tokens = max_new_tokens;
+        p.temperature = temperature;
+        p.top_p = top_p;
+        p.max_ram_budget_bytes = max_ram_budget_bytes;
+        p.allow_parallel_waves = allow_parallel_waves ? 1 : 0;
+        p.preferred_gpu_backend = preferred_gpu_backend.empty() ? nullptr : preferred_gpu_backend.c_str();
+        return p;
+    }
+};
+
+struct CollaborateResult {
+    std::string unified_response;
+    std::string telemetry_report;
+    std::string query_category;
+    int n_tasks_total = 0;
+    int n_tasks_completed = 0;
+    int n_waves = 0;
+    bool hydroxl_participated = false;
+    bool llamacpp_participated = false;
+    bool colibri_participated = false;
+    bool memory_constrained_mode = false;
+    bool concurrent_wave_ran = false;
+    int conflicts_detected = 0;
+    int deduplicated_findings = 0;
+    float overall_confidence = 0.0f;
+    double total_ms = 0.0;
+    HaError error = HA_OK;
+    std::string error_message;
+
+    bool ok() const noexcept { return error == HA_OK; }
+};
+
 class Session {
 public:
     explicit Session(HaSession handle) : handle_(handle) {
@@ -186,6 +230,39 @@ public:
         }
     }
 
+    CollaborateResult collaborate(const CollaborateParams& params) {
+        if (!handle_) {
+            throw Exception(HA_ERR_INVALID_ARG, "Session is not initialized");
+        }
+        HaCollaborateParams c_params = params.to_c_params();
+        HaCollaborateResult c_res = ha_collaborate(handle_, &c_params);
+        return from_c_collab_result(c_res);
+    }
+
+    CollaborateResult collaborate(const std::string& prompt, int max_new_tokens = 24) {
+        CollaborateParams p;
+        p.prompt = prompt;
+        p.max_new_tokens = max_new_tokens;
+        return collaborate(p);
+    }
+
+    CollaborateResult collaborate_stream(const CollaborateParams& params, const TokenCallback& callback) {
+        if (!handle_) {
+            throw Exception(HA_ERR_INVALID_ARG, "Session is not initialized");
+        }
+        HaCollaborateParams c_params = params.to_c_params();
+        HaCollaborateResult c_res = {};
+        auto trampoline = [](const char* text, int tid, void* user_data) -> int {
+            auto* cb = static_cast<const TokenCallback*>(user_data);
+            if (!cb || !(*cb)) return 0;
+            bool cont = (*cb)(text ? text : "", tid);
+            return cont ? 0 : 1;
+        };
+        ha_collaborate_stream(handle_, &c_params, trampoline,
+                              const_cast<void*>(static_cast<const void*>(&callback)), &c_res);
+        return from_c_collab_result(c_res);
+    }
+
     HaSession release() noexcept {
         HaSession h = handle_;
         handle_ = nullptr;
@@ -193,6 +270,28 @@ public:
     }
 
 private:
+    static CollaborateResult from_c_collab_result(const HaCollaborateResult& c_res) {
+        CollaborateResult r;
+        r.error = c_res.error;
+        if (c_res.error_message) r.error_message = c_res.error_message;
+        if (c_res.unified_response) r.unified_response = c_res.unified_response;
+        if (c_res.telemetry_report) r.telemetry_report = c_res.telemetry_report;
+        if (c_res.query_category) r.query_category = c_res.query_category;
+        r.n_tasks_total = c_res.n_tasks_total;
+        r.n_tasks_completed = c_res.n_tasks_completed;
+        r.n_waves = c_res.n_waves;
+        r.hydroxl_participated = (c_res.hydroxl_participated != 0);
+        r.llamacpp_participated = (c_res.llamacpp_participated != 0);
+        r.colibri_participated = (c_res.colibri_participated != 0);
+        r.memory_constrained_mode = (c_res.memory_constrained_mode != 0);
+        r.concurrent_wave_ran = (c_res.concurrent_wave_ran != 0);
+        r.conflicts_detected = c_res.conflicts_detected;
+        r.deduplicated_findings = c_res.deduplicated_findings;
+        r.overall_confidence = c_res.overall_confidence;
+        r.total_ms = c_res.total_ms;
+        return r;
+    }
+
     HaSession handle_ = nullptr;
 };
 

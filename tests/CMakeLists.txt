@@ -367,3 +367,13 @@ target_include_directories(test_p29_real_model_equiv PRIVATE
     ${llama_cpp_SOURCE_DIR}/ggml/include
 )
 set_tests_properties(test_p29_real_model_equiv PROPERTIES TIMEOUT 600)
+
+# Phase 31 - Unified Collaborative Multi-Engine Inference Runtime
+agr_add_test(test_p31_engine_contracts           test_p31_engine_contracts.cpp)
+agr_add_test(test_p31_collaborative_orchestrator test_p31_collaborative_orchestrator.cpp)
+agr_add_test(test_p31_hardware_matrix            test_p31_hardware_matrix.cpp)
+agr_add_test(test_p31_resource_memory_pressure   test_p31_resource_memory_pressure.cpp)
+
+agr_add_test(test_p31_e2e_unified_cli_sdk        test_p31_e2e_unified_cli_sdk.cpp)
+target_link_libraries(test_p31_e2e_unified_cli_sdk PRIVATE agr_sdk)
+set_tests_properties(test_p31_e2e_unified_cli_sdk PROPERTIES TIMEOUT 300)

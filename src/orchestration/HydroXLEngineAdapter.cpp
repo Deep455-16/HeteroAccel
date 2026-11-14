@@ -87,12 +87,24 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
         for (int tid : req.prompt_token_ids) {
             prompt_tokens.push_back(static_cast<hydroxl::TokenID>(tid));
         }
+    } else if (!req.prompt.empty()) {
+        prompt_tokens = tokenizer_->encode(req.prompt, tokenizer_->addsBos());
     } else {
         prompt_tokens = tokenizer_->encode("The capital of France is", tokenizer_->addsBos());
     }
 
     if (prompt_tokens.empty()) {
         prompt_tokens.push_back(1); // minimal token fallback
+    }
+
+    int max_new_cap = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
+    uint32_t max_seq = kv_cache_->maxSeqLen();
+    uint32_t max_prompt = (max_seq > static_cast<uint32_t>(max_new_cap + 2))
+                              ? (max_seq - static_cast<uint32_t>(max_new_cap + 2))
+                              : (max_seq > 1 ? max_seq - 1 : 1);
+    if (prompt_tokens.size() > max_prompt) {
+        prompt_tokens.erase(prompt_tokens.begin(),
+                            prompt_tokens.end() - static_cast<std::ptrdiff_t>(max_prompt));
     }
 
     res.prompt_tokens = static_cast<int>(prompt_tokens.size());
@@ -562,12 +574,24 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
         for (int tid : req.prompt_token_ids) {
             prompt_tokens.push_back(static_cast<hydroxl::TokenID>(tid));
         }
+    } else if (!req.prompt.empty()) {
+        prompt_tokens = tokenizer_->encode(req.prompt, tokenizer_->addsBos());
     } else {
         prompt_tokens = tokenizer_->encode("The capital of France is", tokenizer_->addsBos());
     }
 
     if (prompt_tokens.empty()) {
         prompt_tokens.push_back(1); // minimal token fallback
+    }
+
+    int max_new_cap = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
+    uint32_t max_seq = kv_cache_->maxSeqLen();
+    uint32_t max_prompt = (max_seq > static_cast<uint32_t>(max_new_cap + 2))
+                              ? (max_seq - static_cast<uint32_t>(max_new_cap + 2))
+                              : (max_seq > 1 ? max_seq - 1 : 1);
+    if (prompt_tokens.size() > max_prompt) {
+        prompt_tokens.erase(prompt_tokens.begin(),
+                            prompt_tokens.end() - static_cast<std::ptrdiff_t>(max_prompt));
     }
 
     res.prompt_tokens = static_cast<int>(prompt_tokens.size());

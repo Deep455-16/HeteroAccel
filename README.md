@@ -22,7 +22,7 @@ HeteroAccel is the runtime layer *around* local LLM inference engines. It inspec
 <img src="docs/pipeline.svg" alt="Pipeline: detect, check, plan, execute, fall back safely" width="100%">
 
 > [!IMPORTANT]
-> **Hardware validation scope.** Every feature documented below is backed by source code and automated CTest targets (`130/130` passing with zero skips). Physical hardware validation and end-to-end benchmarks in this repository were measured on **Intel Core i5-1235U (10C/12T) + Intel Iris Xe Vulkan (16 GB RAM, Windows 11)**. CUDA runtime driver probing, memory management (`cuMemAlloc_v2` / `cuMemcpyHtoD_v2` / `cuMemcpyDtoH_v2`), `GGML_CUDA` compilation, and automatic CUDA-to-CPU fallback are implemented and tested; physical NVIDIA GPU inference validation requires an NVIDIA GPU host and is tracked in [docs/RELEASE_VALIDATION_REPORT.md](docs/RELEASE_VALIDATION_REPORT.md).
+> **Hardware validation scope.** Every feature documented below is backed by source code and automated CTest targets (`135/135` passing with zero skips). Physical hardware validation and end-to-end benchmarks in this repository were measured on **Intel Core i5-1235U (10C/12T) + Intel Iris Xe Vulkan (16 GB RAM, Windows 11)**. CUDA runtime driver probing, memory management (`cuMemAlloc_v2` / `cuMemcpyHtoD_v2` / `cuMemcpyDtoH_v2`), `GGML_CUDA` compilation, and automatic CUDA-to-CPU fallback are implemented and tested; physical NVIDIA GPU inference validation requires an NVIDIA GPU host and is tracked in [docs/RELEASE_VALIDATION_REPORT.md](docs/RELEASE_VALIDATION_REPORT.md).
 
 ## 📑 Contents
 
@@ -55,7 +55,9 @@ Legend: ✅ implemented & hardware-verified · 🧩 implemented & CI/software-ve
 | ✅ | Vulkan inference via llama.cpp | Implemented | Built when `HETEROACCEL_ENABLE_VULKAN=ON` (`GGML_VULKAN=ON`). Verified on Intel Iris Xe. |
 | ✅ | HydroXL native CPU engine | Implemented | Multi-threaded row-parallel `matvec` across 7 architecture families and 13 GGML quant types. |
 | ✅ | HydroXL Vulkan hybrid engine | Implemented | `HydroXLVulkanEngineAdapter` (`hydroxl_vulkan`); SPIR-V compute shaders verified on Intel Iris Xe. |
-| ✅ | Hardware-aware orchestrator | Implemented | `EngineOrchestrator` wired to `adaptive-gpu infer`, public C/C++ SDK (`libheteroaccel`), and Python bindings. |
+| ✅ | Colibri specialized analyzer | Implemented | `ColibriEngine` (`colibri`) & `ColibriEngineAdapter` (`colibri_cpu`); deterministic CPU structural, loop/algorithmic complexity, delimiter, and cross-engine verification engine. |
+| ✅ | Collaborative Multi-Engine Orchestrator | Implemented | `CollaborativeExecutionOrchestrator` partitions queries into DAG waves across **HydroXL**, **llama.cpp**, and **Colibri**, exchanges intermediate results, swaps models under constrained RAM, and fuses validated findings via `ResultFusionEngine`. |
+| ✅ | Hardware-aware orchestrator | Implemented | `EngineOrchestrator` wired to `adaptive-gpu infer`, `collaborate`, `run`, `chat`, public C/C++ SDK (`libheteroaccel`), and Python bindings. |
 | ✅ | Cross-platform plugin loader | Implemented | Cross-platform `DynamicLibrary` (`LoadLibraryA` on Windows, `dlopen` on Linux/macOS). |
 | ✅ | Cross-platform builds & CI | Implemented | GitHub Actions matrix for Windows MSVC, Ubuntu Linux (CPU, Vulkan, CUDA 12.6), and macOS. |
 | 🧩 | NVIDIA CUDA backend | Implemented (Hardware Pending) | `-DHETEROACCEL_ENABLE_CUDA=ON` enables `GGML_CUDA`, `CudaRuntime` driver API, `CUDAAllocator`, and `LlamaCppEngineAdapter` (`cuda`). Verified for driver-absence safety and CPU fallback; physical NVIDIA GPU execution is pending an NVIDIA runner. |

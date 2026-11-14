@@ -15,6 +15,7 @@ namespace orchestration {
 using StreamCallback = std::function<bool(const std::string& token_text, int token_id)>;
 
 struct InferenceRequest {
+    std::string prompt;
     std::vector<int> prompt_token_ids;
     int max_new_tokens = 16;
     float temperature = 0.0f;

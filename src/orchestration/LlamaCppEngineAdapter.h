@@ -33,6 +33,10 @@ public:
     /// then falls back to CPU and records this reason.
     bool initialize(const std::string& model_path, std::string& error) override;
     InferenceResult run(const InferenceRequest& req) override;
+    bool run_stream(const InferenceRequest& req,
+                    StreamCallback cb,
+                    InferenceResult& result_out) override;
+    bool supports_streaming() const override { return true; }
     void shutdown() override;
     std::string backend_id() const override { return backend_id_; }
     bool is_ready() const override;

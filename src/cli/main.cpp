@@ -505,17 +505,86 @@ int runSchedulerCommand() {
 }
 
 // =============================================================================
-// Phase 7 — Auto-Scheduled Inference & Chat
+// Phase 7 & Unified Collaborative Multi-Engine Inference & Chat
 // =============================================================================
+int runCollaborateCommand(const std::vector<std::string>& args) {
+    std::string model_path;
+    std::string prompt = "Explain virtual memory and analyze page-table lookup complexity.";
+    std::string gpu_backend;
+    int max_tokens = 24;
+    int budget_mb = 0;
+    bool sequential = false;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (parseStringArg(args, i, "--model",       model_path))  continue;
+        if (parseStringArg(args, i, "--prompt",      prompt))      continue;
+        if (parseStringArg(args, i, "--gpu-backend", gpu_backend)) continue;
+        if (parseIntArg(args, i,    "--max-tokens",  max_tokens))  continue;
+        if (parseIntArg(args, i,    "--memory-budget-mb", budget_mb)) continue;
+        if (args[i] == "--sequential") { sequential = true; continue; }
+    }
+
+    if (model_path.empty()) {
+        const char* env = std::getenv("HETEROACCEL_MODEL_PATH");
+        if (env) model_path = env;
+    }
+
+    if (model_path.empty()) {
+        std::cerr << "ERROR: No model path provided.\n";
+        std::cerr << "  Usage: adaptive-gpu collaborate --model <path.gguf> --prompt \"...\"\n";
+        return 1;
+    }
+
+    agr::HeteroRuntime runtime;
+    if (!runtime.initialize()) {
+        std::cerr << "ERROR: Failed to initialize HeteroRuntime\n";
+        return 1;
+    }
+
+    agr::collaboration::CollaborativeRequest creq;
+    creq.model_path = model_path;
+    creq.prompt = prompt;
+    creq.max_new_tokens_per_task = max_tokens;
+    creq.allow_parallel_waves = !sequential;
+    creq.preferred_gpu_backend = gpu_backend;
+    if (budget_mb > 0) {
+        creq.max_ram_budget_bytes = static_cast<size_t>(budget_mb) * 1024ULL * 1024ULL;
+    }
+
+    std::cout << "\n================================================\n";
+    std::cout << "HeteroAccel Unified Collaborative Runtime\n";
+    std::cout << "Engines: HydroXL (native) + llama.cpp (compatibility) + Colibri (specialized)\n";
+    std::cout << "================================================\n";
+    std::cout << "Prompt: " << prompt << "\n\n";
+
+    auto cb = [](const std::string& chunk, int) -> bool {
+        std::cout << chunk << std::flush;
+        return true;
+    };
+
+    auto cres = runtime.generateCollaborativeStreaming(creq, cb);
+    std::cout << "\n" << cres.formatTelemetryReport() << "\n";
+
+    runtime.shutdown();
+    return cres.success ? 0 : 1;
+}
+
 int runInferenceCommand(const std::vector<std::string>& args) {
     std::string model_path;
     std::string prompt = "Explain virtual memory in simple terms.";
     agr::GenerationOptions opts;
+    bool single_engine = false;
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (parseStringArg(args, i, "--model",      model_path))  continue;
         if (parseStringArg(args, i, "--prompt",     prompt))      continue;
         if (parseIntArg(args, i,    "--max-tokens", opts.max_tokens)) continue;
+        if (args[i] == "--single-engine") { single_engine = true; continue; }
+        if (args[i] == "--collaborative") { single_engine = false; continue; }
+    }
+
+    if (!single_engine) {
+        return runCollaborateCommand(args);
     }
 
     if (model_path.empty()) {
@@ -574,10 +643,14 @@ int runInferenceCommand(const std::vector<std::string>& args) {
 int runChatCommand(const std::vector<std::string>& args) {
     std::string model_path;
     agr::GenerationOptions opts;
+    opts.max_tokens = 24;
+    bool collaborative_mode = true;
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (parseStringArg(args, i, "--model",      model_path))  continue;
         if (parseIntArg(args, i,    "--max-tokens", opts.max_tokens)) continue;
+        if (args[i] == "--single-engine") { collaborative_mode = false; continue; }
+        if (args[i] == "--collaborative") { collaborative_mode = true; continue; }
     }
 
     if (model_path.empty()) {
@@ -597,36 +670,48 @@ int runChatCommand(const std::vector<std::string>& args) {
         return 1;
     }
 
-    std::cout << "HeteroAccel Interactive Chat\n";
+    std::cout << "HeteroAccel Unified Collaborative Interactive Chat\n";
+    std::cout << "Active Engines: HydroXL + llama.cpp + Colibri\n";
     std::cout << "Type 'exit' or 'quit' to stop.\n\n";
-    
-    std::cout << "Loading model via Phase 5 Scheduler...\n";
-    if (!runtime.loadModel(model_path, opts)) {
-        std::cerr << "ERROR: Failed to load model.\n";
-        return 1;
-    }
-    
-    std::cout << runtime.diagnosticsReport() << "\n";
 
+    std::vector<std::pair<std::string, std::string>> history;
     std::string input;
     while (true) {
         std::cout << "\nYou: ";
-        std::getline(std::cin, input);
+        if (!std::getline(std::cin, input)) break;
         if (input == "exit" || input == "quit") break;
         if (input.empty()) continue;
 
-        std::cout << "\nAssistant: ";
-        
-        auto cb = [](const std::string& piece) {
-            std::cout << piece << std::flush;
-        };
-        
-        agr::InferenceResult res = runtime.generateStreaming(model_path, input, cb, opts);
-        
-        if (!res.success) {
-            std::cerr << "\n[Error: " << res.error << "]\n";
+        std::cout << "\nAssistant:\n";
+        if (collaborative_mode) {
+            agr::collaboration::CollaborativeRequest creq;
+            creq.model_path = model_path;
+            creq.prompt = input;
+            creq.conversation_history = history;
+            creq.max_new_tokens_per_task = opts.max_tokens > 0 ? opts.max_tokens : 24;
+
+            auto cb = [](const std::string& chunk, int) -> bool {
+                std::cout << chunk << std::flush;
+                return true;
+            };
+            auto cres = runtime.generateCollaborativeStreaming(creq, cb);
+            if (!cres.success) {
+                std::cerr << "\n[Error: " << cres.error << "]\n";
+            } else {
+                history.push_back({"User", input});
+                history.push_back({"Assistant", cres.unified_response});
+                std::cout << "\n" << cres.formatTelemetryReport() << "\n";
+            }
+        } else {
+            auto cb = [](const std::string& piece) {
+                std::cout << piece << std::flush;
+            };
+            agr::InferenceResult res = runtime.generateStreaming(model_path, input, cb, opts);
+            if (!res.success) {
+                std::cerr << "\n[Error: " << res.error << "]\n";
+            }
+            std::cout << "\n";
         }
-        std::cout << "\n";
     }
 
     runtime.shutdown();
@@ -1106,6 +1191,11 @@ int main(int argc, char** argv) {
     if (args[0] == "run") {
         std::vector<std::string> rest(args.begin() + 1, args.end());
         return runInferenceCommand(rest);
+    }
+
+    if (args[0] == "collaborate") {
+        std::vector<std::string> rest(args.begin() + 1, args.end());
+        return runCollaborateCommand(rest);
     }
 
     if (args[0] == "chat") {

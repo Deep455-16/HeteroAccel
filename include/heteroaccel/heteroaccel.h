@@ -135,6 +135,44 @@ HA_API int         ha_backend_count(HaRuntime rt);
 HA_API HaError     ha_backend_get(HaRuntime rt, int index, HaBackendInfo* info_out);
 HA_API const char* ha_error_string(HaError err);
 
+// Unified Collaborative Multi-Engine Inference (HydroXL + llama.cpp + Colibri)
+typedef struct {
+    const char* prompt;                 // User query (required)
+    int         max_new_tokens;         // Max tokens per engine subtask (default 24)
+    float       temperature;            // Sampling temperature (0.0 = greedy)
+    float       top_p;                  // Nucleus sampling threshold
+    size_t      max_ram_budget_bytes;   // 0 = auto (80% of available RAM)
+    int         allow_parallel_waves;   // 1 = parallel waves when memory permits, 0 = sequential
+    const char* preferred_gpu_backend;  // NULL/"" = auto, "cpu", "vulkan", "cuda"
+} HaCollaborateParams;
+
+typedef struct {
+    const char* unified_response;       // Fused response (valid until next call or session destroy)
+    const char* telemetry_report;       // Detailed collaboration & resource telemetry report
+    const char* query_category;         // Classified query category
+    int         n_tasks_total;
+    int         n_tasks_completed;
+    int         n_waves;
+    int         hydroxl_participated;   // 1 if HydroXL completed >= 1 task
+    int         llamacpp_participated;  // 1 if llama.cpp completed >= 1 task
+    int         colibri_participated;   // 1 if Colibri completed >= 1 task
+    int         memory_constrained_mode;// 1 if sequential model swapping was activated
+    int         concurrent_wave_ran;    // 1 if independent tasks ran in parallel
+    int         conflicts_detected;
+    int         deduplicated_findings;
+    float       overall_confidence;
+    double      total_ms;
+    HaError     error;
+    const char* error_message;
+} HaCollaborateResult;
+
+HA_API HaCollaborateResult ha_collaborate(HaSession session, const HaCollaborateParams* params);
+HA_API HaError             ha_collaborate_stream(HaSession session,
+                                                 const HaCollaborateParams* params,
+                                                 HaTokenCallback cb,
+                                                 void* user_data,
+                                                 HaCollaborateResult* result_out);
+
 #ifdef __cplusplus
 }
 #endif

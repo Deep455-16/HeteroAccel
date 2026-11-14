@@ -15,7 +15,8 @@
 | **Phase 27** | HydroXL Universal Model Support | Multi-architecture GGUF loader & forward pass (`llama`, `mistral`, `mistral3`, `qwen2`, `phi3`, `gemma`, `gemma2`), SentencePiece `▁` + `<0xXX>` byte-fallback and GPT-2 BPE tokenizers, GQA KV-cache stride fix, 13 GGML quantization decoders (`F32`, `F16`, `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, `Q6_K`, `Q8_K`), `test_p27_quant_decoders` & `test_p27_architectures`. | ✅ Completed |
 | **Phase 28** | Cross-Platform & Hardware Validation | Removed Windows-only `<windows.h>` lock-in from `PluginLoader`, added macOS `sysctl` RAM/CPU detection, separated `VulkanInfo::available` from `VulkanInfo::has_physical_gpu` (flagging `llvmpipe` / `lavapipe` / `SwiftShader` as `is_software = true`), guarded shader post-build copy commands for headless CPU/CUDA builds, added 5-job GitHub Actions matrix (`.github/workflows/ci.yml`), `test_p28_portability`. | ✅ Completed |
 | **Phase 29** | Performance Engineering & Benchmarking | `EndToEndBench` & `heteroaccel-bench` CLI producing JSON reports, persistent `HydroXLOps` worker thread pool (achieving a **4.36x HydroXL CPU decode speedup** from 1.56 to 6.80 tok/s and **4.01x TTFT reduction**), greedy sampling `repeat_penalty` fix for exact token equivalence between HydroXL and `llama.cpp`, `test_p29_perf_regression` & `test_p29_real_model_equiv`. | ✅ Completed |
-| **Phase 30** | Documentation & Production Release | Synchronized CMake (`0.30.0`) and C/C++ SDK (`0.30.0`) versions, audited and updated `README.md`, verified `c_example`, `cpp_example`, and `cmake --install`, executed full 130-test suite (`130/130` passed, 0 failed, 0 skipped). | ✅ Completed |
+| **Phase 30** | Documentation & Production Release | Synchronized CMake (`0.30.0`) and C/C++ SDK (`0.30.0`) versions, audited and updated `README.md`, verified `c_example`, `cpp_example`, and `cmake --install`, executed full test suite (`0` failed, `0` skipped). | ✅ Completed |
+| **Phase 31** | Unified Collaborative Multi-Engine Runtime | `ColibriEngine` (`src/colibri/`), `CollaborativeExecutionOrchestrator`, `WorkloadPartitioner` (DAG wave decomposition via `ExecutionGraph`), `CollaborativeResourceManager` (constrained-RAM sequential model swapping), `ResultFusionEngine` (Jaccard deduplication, conflict resolution, and unified synthesis), `ha_collaborate` / `ha::Session::collaborate`, `adaptive-gpu collaborate`, and 5 automated `test_p31_*` suites (`135/135` total tests passing). | ✅ Completed |
 
 ---
 
@@ -40,8 +41,8 @@ Command executed on primary validation host:
 ctest --test-dir build -C Release --output-on-failure --parallel 2
 ```
 
-- **Total Tests Registered:** `130`
-- **Passed:** `130 (100%)`
+- **Total Tests Registered:** `135`
+- **Passed:** `135 (100%)`
 - **Failed:** `0`
 - **Skipped:** `0`
 - **Total Execution Time:** `~224.5 seconds`

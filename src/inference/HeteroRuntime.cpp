@@ -485,4 +485,15 @@ ModelExecutionPlan HeteroRuntime::planExecution(const std::string& model_path) {
     return planner.plan(report.model, report, ExecutionEngineRegistry::instance());
 }
 
+collaboration::CollaborativeResult HeteroRuntime::generateCollaborative(
+    const collaboration::CollaborativeRequest& req) {
+    return collaborativeOrch_.execute(req);
+}
+
+collaboration::CollaborativeResult HeteroRuntime::generateCollaborativeStreaming(
+    const collaboration::CollaborativeRequest& req,
+    collaboration::CollaborativeStreamCallback cb) {
+    return collaborativeOrch_.executeStreaming(req, std::move(cb));
+}
+
 } // namespace agr

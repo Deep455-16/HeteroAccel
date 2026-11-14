@@ -563,10 +563,31 @@ std::vector<TokenID> HydroXLTokenizer::encode(const std::string& text,
 // ---------------------------------------------------------------------------
 std::string HydroXLTokenizer::decodeToken(TokenID id) const {
     if (id < 0 || static_cast<size_t>(id) >= vocab_.size()) return "";
+    size_t idx = static_cast<size_t>(id);
     if (tok_type_ == TokenizerType::LLAMA) {
-        return decodeSentencePieceToken(vocab_[static_cast<size_t>(id)]);
+        return decodeSentencePieceToken(vocab_[idx]);
     }
-    return vocab_[static_cast<size_t>(id)];
+    if (idx < token_type_.size() && (token_type_[idx] == 3 || token_type_[idx] == 5)) {
+        return vocab_[idx];
+    }
+    const std::string& mapped = vocab_[idx];
+    std::string out;
+    out.reserve(mapped.size());
+    size_t i = 0;
+    while (i < mapped.size()) {
+        size_t len = 1;
+        uint32_t cp = decodeUtf8(mapped, i, len);
+        (void)cp;
+        std::string ch = mapped.substr(i, len);
+        auto it = unicode_to_byte_.find(ch);
+        if (it != unicode_to_byte_.end()) {
+            out += static_cast<char>(it->second);
+        } else {
+            out += ch;
+        }
+        i += len;
+    }
+    return out;
 }
 
 std::string HydroXLTokenizer::decode(const std::vector<TokenID>& ids,

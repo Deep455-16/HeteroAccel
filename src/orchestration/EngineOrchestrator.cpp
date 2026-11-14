@@ -5,6 +5,7 @@
 #include "orchestration/HydroXLEngineAdapter.h"
 #include "orchestration/LlamaCppEngineAdapter.h"
 #include "orchestration/MemoryEstimator.h"
+#include "colibri/ColibriEngine.h"
 
 #include <algorithm>
 #include <iomanip>
@@ -23,6 +24,15 @@ void register_builtin_factories(std::map<std::string, EngineOrchestrator::Engine
     f["hydroxl_vulkan"] = []() {
         return std::make_shared<HydroXLVulkanEngineAdapter>();
     };
+    f["llamacpp_cpu"] = []() -> std::shared_ptr<IInferenceEngine> {
+        return std::make_shared<LlamaCppEngineAdapter>("llamacpp_cpu", "cpu", 0);
+    };
+    f["llamacpp_vulkan"] = []() -> std::shared_ptr<IInferenceEngine> {
+        return std::make_shared<LlamaCppEngineAdapter>("llamacpp_vulkan", "vulkan", 0);
+    };
+    f["colibri_cpu"] = []() -> std::shared_ptr<IInferenceEngine> {
+        return std::make_shared<ColibriEngineAdapter>();
+    };
 #if defined(HETEROACCEL_CUDA_ENABLED) && HETEROACCEL_CUDA_ENABLED
     f["cuda"] = []() -> std::shared_ptr<IInferenceEngine> {
         int dev = 0;
@@ -31,6 +41,7 @@ void register_builtin_factories(std::map<std::string, EngineOrchestrator::Engine
         }
         return std::make_shared<LlamaCppEngineAdapter>("cuda", "cuda", dev);
     };
+    f["llamacpp_cuda"] = f["cuda"];
 #endif
 }
 } // namespace

@@ -52,9 +52,9 @@ InferenceResult LlamaCppEngineAdapter::run(const InferenceRequest& req) {
         return out;
     }
     engine_->setGeneration(req.max_new_tokens > 0 ? req.max_new_tokens : 16, req.temperature, 42u);
-    LlmResult r = req.prompt_token_ids.empty()
-                      ? engine_->infer("The capital of France is")
-                      : engine_->inferTokens(req.prompt_token_ids);
+    LlmResult r = !req.prompt_token_ids.empty()
+                      ? engine_->inferTokens(req.prompt_token_ids)
+                      : engine_->infer(req.prompt.empty() ? "The capital of France is" : req.prompt);
     last_logits_ = r.first_token_logits;
 
     out.success           = r.success;
@@ -71,6 +71,36 @@ InferenceResult LlamaCppEngineAdapter::run(const InferenceRequest& req) {
                                     ? r.device_total_bytes - r.device_free_bytes : 0;
     }
     return out;
+}
+
+bool LlamaCppEngineAdapter::run_stream(const InferenceRequest& req,
+                                       StreamCallback cb,
+                                       InferenceResult& result_out) {
+    result_out = run(req);
+    if (!result_out.success) {
+        return false;
+    }
+    if (cb && !result_out.output_text.empty()) {
+        // Deliver token chunks or text segment to stream callback
+        size_t n_ids = result_out.output_token_ids.size();
+        if (n_ids <= 1) {
+            int tid = n_ids == 1 ? result_out.output_token_ids[0] : 0;
+            cb(result_out.output_text, tid);
+        } else {
+            // Split proportionally across generated token IDs for incremental streaming
+            size_t len = result_out.output_text.size();
+            size_t pos = 0;
+            for (size_t i = 0; i < n_ids; ++i) {
+                size_t next_pos = (i + 1 == n_ids) ? len : ((i + 1) * len) / n_ids;
+                std::string chunk = result_out.output_text.substr(pos, next_pos - pos);
+                pos = next_pos;
+                if (!cb(chunk, result_out.output_token_ids[i])) {
+                    break;
+                }
+            }
+        }
+    }
+    return true;
 }
 
 void LlamaCppEngineAdapter::shutdown() {
