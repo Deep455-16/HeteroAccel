@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <vector>
 #include <string>
 #include <memory>
@@ -21,6 +22,13 @@ struct InferenceRequest {
     float temperature = 0.0f;
     float top_p = 0.95f;
     bool stream = false;
+
+    // Phase 33 generation controls (all optional; defaults preserve old behaviour)
+    std::atomic<bool>* cancel_flag = nullptr;  ///< Polled between tokens
+    int  time_budget_ms = 0;                   ///< 0 = no wall-clock limit
+    std::vector<std::string> stop_sequences;   ///< Generation stops before these
+    bool parse_special = false;                ///< Treat <|...|> control markers in prompt as tokens
+    float repeat_penalty = 1.0f;               ///< 1.0 = disabled (preserves pure greedy equivalence)
 };
 
 struct InferenceResult {
@@ -34,7 +42,11 @@ struct InferenceResult {
     std::string backend_used;
     bool success = false;
     std::string error;
+    /// Why generation ended: "eos", "max_tokens", "stop_sequence",
+    /// "time_budget", "cancelled" or "context_limit" (empty if unknown).
+    std::string finish_reason;
 };
+
 
 class IInferenceEngine {
 public:

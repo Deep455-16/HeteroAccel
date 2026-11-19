@@ -2,6 +2,7 @@
 // Phase 21: Native HydroXL adapters implementing IInferenceEngine
 
 #include "orchestration/HydroXLEngineAdapter.h"
+#include "generation/GenerationBudget.h"
 #include "hydroxl/GGUFLoader.h"
 #include "hydroxl/HydroXLOps.h"
 
@@ -11,6 +12,25 @@
 
 namespace agr {
 namespace orchestration {
+
+namespace {
+
+/// Collects up to the last 64 unique generated token IDs so HydroXLSampler
+/// penalises each recent token at most once (matching llama_sampler_init_penalties).
+void collectRecentUniqueTokens(const std::vector<int>& generated,
+                               std::vector<hydroxl::TokenID>& recent_out) {
+    recent_out.clear();
+    const size_t n = generated.size();
+    const size_t start = n > 64 ? n - 64 : 0;
+    for (size_t i = start; i < n; ++i) {
+        auto tok = static_cast<hydroxl::TokenID>(generated[i]);
+        if (std::find(recent_out.begin(), recent_out.end(), tok) == recent_out.end()) {
+            recent_out.push_back(tok);
+        }
+    }
+}
+
+} // namespace
 
 HydroXLCpuEngineAdapter::HydroXLCpuEngineAdapter() {
     model_        = std::make_unique<hydroxl::HydroXLModel>();
@@ -88,7 +108,7 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
             prompt_tokens.push_back(static_cast<hydroxl::TokenID>(tid));
         }
     } else if (!req.prompt.empty()) {
-        prompt_tokens = tokenizer_->encode(req.prompt, tokenizer_->addsBos());
+        prompt_tokens = tokenizer_->encode(req.prompt, tokenizer_->addsBos(), req.parse_special);
     } else {
         prompt_tokens = tokenizer_->encode("The capital of France is", tokenizer_->addsBos());
     }
@@ -127,42 +147,71 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
     sp.top_k = 40;
     sp.top_p = req.top_p;
     sp.seed = 42;
-    // Greedy decoding (temperature 0) is a pure argmax, matching llama.cpp. The default
-    // repetition penalty would otherwise penalise prompt tokens (e.g. " is") and make
-    // greedy output differ from every reference engine for identical settings.
-    if (req.temperature <= 0.0f) sp.repeat_penalty = 1.0f;
+    // Greedy decoding (temperature 0) uses repeat_penalty=1.0 unless caller explicitly
+    // requests repetition control (preserving pure greedy reference equivalence).
+    sp.repeat_penalty = (req.repeat_penalty > 1.0f)
+                            ? req.repeat_penalty
+                            : ((req.temperature <= 0.0f) ? 1.0f : 1.1f);
     hydroxl::HydroXLSampler sampler(sp);
 
     std::vector<int> out_ids;
+    std::vector<hydroxl::TokenID> recent_tokens;
     std::string out_text;
     std::string utf8_pending;
     int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
 
+    generation::Deadline deadline(req.time_budget_ms);
+    generation::StopSequenceFilter stop_filter(req.stop_sequences);
+    std::string finish_reason = generation::finish::kMaxTokens;
+    bool stop_hit = false;
+
     auto t_gen_start = std::chrono::steady_clock::now();
     bool cancelled = false;
     for (int i = 0; i < max_new; ++i) {
-        if (pos >= kv_cache_->maxSeqLen()) break;
+        if (req.cancel_flag && req.cancel_flag->load(std::memory_order_acquire)) {
+            cancelled = true;
+            finish_reason = generation::finish::kCancelled;
+            break;
+        }
+        if (deadline.expired()) {
+            finish_reason = generation::finish::kTimeBudget;
+            break;
+        }
+        if (pos >= kv_cache_->maxSeqLen()) {
+            finish_reason = generation::finish::kContextLimit;
+            break;
+        }
 
+        if (sp.repeat_penalty != 1.0f) {
+            collectRecentUniqueTokens(out_ids, recent_tokens);
+        }
         hydroxl::TokenID next_tok = sampler.sample(
             logits.data(),
             static_cast<uint32_t>(logits.size()),
-            prompt_tokens
+            recent_tokens
         );
 
-        if (next_tok == tokenizer_->eosToken() || next_tok == hydroxl::TOKEN_INVALID) {
+        if (tokenizer_->isEndOfGeneration(next_tok) || next_tok == hydroxl::TOKEN_INVALID) {
+            finish_reason = generation::finish::kEos;
             break;
         }
 
         int tid = static_cast<int>(next_tok);
         out_ids.push_back(tid);
-        std::string piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
+        std::string raw_piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
+        std::string piece = stop_filter.feed(raw_piece, stop_hit);
         out_text += piece;
 
         if (cb && !piece.empty()) {
             if (!cb(piece, tid)) {
                 cancelled = true;
+                finish_reason = generation::finish::kCancelled;
                 break;
             }
+        }
+        if (stop_hit) {
+            finish_reason = generation::finish::kStopSequence;
+            break;
         }
 
         if (!forward_pass_->forward(static_cast<uint32_t>(next_tok), pos, logits)) {
@@ -175,12 +224,20 @@ bool HydroXLCpuEngineAdapter::run_stream(const InferenceRequest& req,
         }
         ++pos;
     }
+    if (!stop_hit && !cancelled) {
+        const std::string tail = stop_filter.flush();
+        if (!tail.empty()) {
+            out_text += tail;
+            if (cb) cb(tail, out_ids.empty() ? 0 : out_ids.back());
+        }
+    }
     utf8_pending.clear();
     auto t_gen_end = std::chrono::steady_clock::now();
 
     res.output_token_ids = out_ids;
     res.output_text = out_text;
     res.output_tokens = static_cast<int>(out_ids.size());
+    res.finish_reason = finish_reason;
     double gen_sec = std::chrono::duration<double>(t_gen_end - t_gen_start).count();
     if (gen_sec > 0.0 && res.output_tokens > 0) {
         res.tokens_per_second = static_cast<float>(res.output_tokens / gen_sec);
@@ -577,7 +634,7 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
             prompt_tokens.push_back(static_cast<hydroxl::TokenID>(tid));
         }
     } else if (!req.prompt.empty()) {
-        prompt_tokens = tokenizer_->encode(req.prompt, tokenizer_->addsBos());
+        prompt_tokens = tokenizer_->encode(req.prompt, tokenizer_->addsBos(), req.parse_special);
     } else {
         prompt_tokens = tokenizer_->encode("The capital of France is", tokenizer_->addsBos());
     }
@@ -617,42 +674,71 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
     sp.top_k = 40;
     sp.top_p = req.top_p;
     sp.seed = 42;
-    // Greedy decoding (temperature 0) is a pure argmax, matching llama.cpp. The default
-    // repetition penalty would otherwise penalise prompt tokens (e.g. " is") and make
-    // greedy output differ from every reference engine for identical settings.
-    if (req.temperature <= 0.0f) sp.repeat_penalty = 1.0f;
+    // Greedy decoding (temperature 0) uses repeat_penalty=1.0 unless caller explicitly
+    // requests repetition control (preserving pure greedy reference equivalence).
+    sp.repeat_penalty = (req.repeat_penalty > 1.0f)
+                            ? req.repeat_penalty
+                            : ((req.temperature <= 0.0f) ? 1.0f : 1.1f);
     hydroxl::HydroXLSampler sampler(sp);
 
     std::vector<int> out_ids;
+    std::vector<hydroxl::TokenID> recent_tokens;
     std::string out_text;
     std::string utf8_pending;
     int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
 
+    generation::Deadline deadline(req.time_budget_ms);
+    generation::StopSequenceFilter stop_filter(req.stop_sequences);
+    std::string finish_reason = generation::finish::kMaxTokens;
+    bool stop_hit = false;
+
     auto t_gen_start = std::chrono::steady_clock::now();
     bool cancelled = false;
     for (int i = 0; i < max_new; ++i) {
-        if (pos >= kv_cache_->maxSeqLen()) break;
+        if (req.cancel_flag && req.cancel_flag->load(std::memory_order_acquire)) {
+            cancelled = true;
+            finish_reason = generation::finish::kCancelled;
+            break;
+        }
+        if (deadline.expired()) {
+            finish_reason = generation::finish::kTimeBudget;
+            break;
+        }
+        if (pos >= kv_cache_->maxSeqLen()) {
+            finish_reason = generation::finish::kContextLimit;
+            break;
+        }
 
+        if (sp.repeat_penalty != 1.0f) {
+            collectRecentUniqueTokens(out_ids, recent_tokens);
+        }
         hydroxl::TokenID next_tok = sampler.sample(
             logits.data(),
             static_cast<uint32_t>(logits.size()),
-            prompt_tokens
+            recent_tokens
         );
 
-        if (next_tok == tokenizer_->eosToken() || next_tok == hydroxl::TOKEN_INVALID) {
+        if (tokenizer_->isEndOfGeneration(next_tok) || next_tok == hydroxl::TOKEN_INVALID) {
+            finish_reason = generation::finish::kEos;
             break;
         }
 
         int tid = static_cast<int>(next_tok);
         out_ids.push_back(tid);
-        std::string piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
+        std::string raw_piece = tokenizer_->decodeTokenStreaming(next_tok, utf8_pending, true);
+        std::string piece = stop_filter.feed(raw_piece, stop_hit);
         out_text += piece;
 
         if (cb && !piece.empty()) {
             if (!cb(piece, tid)) {
                 cancelled = true;
+                finish_reason = generation::finish::kCancelled;
                 break;
             }
+        }
+        if (stop_hit) {
+            finish_reason = generation::finish::kStopSequence;
+            break;
         }
 
         if (!forward_token(static_cast<uint32_t>(next_tok), pos, logits, err)) {
@@ -665,12 +751,20 @@ bool HydroXLVulkanEngineAdapter::run_stream(const InferenceRequest& req,
         }
         ++pos;
     }
+    if (!stop_hit && !cancelled) {
+        const std::string tail = stop_filter.flush();
+        if (!tail.empty()) {
+            out_text += tail;
+            if (cb) cb(tail, out_ids.empty() ? 0 : out_ids.back());
+        }
+    }
     utf8_pending.clear();
     auto t_gen_end = std::chrono::steady_clock::now();
 
     res.output_token_ids = out_ids;
     res.output_text = out_text;
     res.output_tokens = static_cast<int>(out_ids.size());
+    res.finish_reason = finish_reason;
     double gen_sec = std::chrono::duration<double>(t_gen_end - t_gen_start).count();
     if (gen_sec > 0.0 && res.output_tokens > 0) {
         res.tokens_per_second = static_cast<float>(res.output_tokens / gen_sec);

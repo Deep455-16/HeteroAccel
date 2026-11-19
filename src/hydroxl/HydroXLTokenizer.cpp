@@ -217,8 +217,38 @@ bool HydroXLTokenizer::loadFromGGUF(GGUFLoader& gguf) {
         if (auto* b = std::get_if<bool>(v)) add_bos_ = *b;
     }
 
+    buildSpecialTables();
     loaded_ = true;
     return true;
+}
+
+void HydroXLTokenizer::buildSpecialTables() {
+    special_pieces_.clear();
+    eog_ids_.clear();
+    static const char* const kEogTexts[] = {
+        "<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>", "</s>",
+        "<|end|>", "<|eom_id|>"
+    };
+    for (size_t i = 0; i < vocab_.size(); ++i) {
+        const std::string& t = vocab_[i];
+        const int type = (i < token_type_.size()) ? token_type_[i] : 1;
+        const bool is_marker = (t.size() >= 3 && t.front() == '<' && t.back() == '>');
+        if ((type == 3 || type == 4) && is_marker) {
+            special_pieces_.emplace_back(t, static_cast<TokenID>(i));
+        }
+        for (const char* e : kEogTexts) {
+            if (t == e && (type == 3 || type == 4)) {
+                eog_ids_.insert(static_cast<TokenID>(i));
+            }
+        }
+    }
+    if (eos_id_ != TOKEN_INVALID) eog_ids_.insert(eos_id_);
+    std::stable_sort(special_pieces_.begin(), special_pieces_.end(),
+                     [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+}
+
+bool HydroXLTokenizer::isEndOfGeneration(TokenID id) const {
+    return eog_ids_.find(id) != eog_ids_.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -539,8 +569,18 @@ TokenID HydroXLTokenizer::tokenToId(const std::string& s) const {
 // ---------------------------------------------------------------------------
 // encode
 // ---------------------------------------------------------------------------
+std::vector<TokenID> HydroXLTokenizer::encodePlainBpe(const std::string& text) const {
+    std::vector<TokenID> result;
+    for (const auto& piece : preTokenize(text)) {
+        auto toks = bpe(piece);
+        result.insert(result.end(), toks.begin(), toks.end());
+    }
+    return result;
+}
+
 std::vector<TokenID> HydroXLTokenizer::encode(const std::string& text,
-                                               bool add_bos) const {
+                                               bool add_bos,
+                                               bool parse_special) const {
     std::vector<TokenID> result;
     if (!loaded_) return result;
     if (add_bos && bos_id_ != TOKEN_INVALID) result.push_back(bos_id_);
@@ -551,9 +591,38 @@ std::vector<TokenID> HydroXLTokenizer::encode(const std::string& text,
         return result;
     }
 
-    for (const auto& piece : preTokenize(text)) {
-        auto toks = bpe(piece);
+    if (!parse_special || special_pieces_.empty()) {
+        auto toks = encodePlainBpe(text);
         result.insert(result.end(), toks.begin(), toks.end());
+        return result;
+    }
+
+    // Split at literal special-token strings (earliest match, longest wins ties).
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t best_pos = std::string::npos;
+        size_t best_len = 0;
+        TokenID best_id = TOKEN_INVALID;
+        for (const auto& sp : special_pieces_) {
+            const size_t p = text.find(sp.first, i);
+            if (p == std::string::npos) continue;
+            if (p < best_pos || (p == best_pos && sp.first.size() > best_len)) {
+                best_pos = p;
+                best_len = sp.first.size();
+                best_id = sp.second;
+            }
+        }
+        if (best_pos == std::string::npos) {
+            auto toks = encodePlainBpe(text.substr(i));
+            result.insert(result.end(), toks.begin(), toks.end());
+            break;
+        }
+        if (best_pos > i) {
+            auto toks = encodePlainBpe(text.substr(i, best_pos - i));
+            result.insert(result.end(), toks.begin(), toks.end());
+        }
+        result.push_back(best_id);
+        i = best_pos + best_len;
     }
     return result;
 }

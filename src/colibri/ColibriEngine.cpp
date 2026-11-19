@@ -364,27 +364,43 @@ ColibriAnalysisReport ColibriEngine::analyze(const std::string& query,
         rep.task_category = "structural_summary";
     }
 
-    // 2. Structural & loop complexity estimation
+    // 2. Structural, loop & algorithm complexity estimation
     rep.max_loop_nesting_depth = computeLoopNestingDepth(combined);
+    const bool has_fib = containsWordOrSubstr(lower, "fibonacci") || containsWordOrSubstr(lower, "fib(");
+    const bool has_naive_fib_rec = has_fib &&
+        (containsWordOrSubstr(lower, "fib(n - 1)") || containsWordOrSubstr(lower, "fib(n-1)") ||
+         containsWordOrSubstr(lower, "fibonacci(n - 1)") || containsWordOrSubstr(lower, "fibonacci(n-1)")) &&
+        (containsWordOrSubstr(lower, "fib(n - 2)") || containsWordOrSubstr(lower, "fib(n-2)") ||
+         containsWordOrSubstr(lower, "fibonacci(n - 2)") || containsWordOrSubstr(lower, "fibonacci(n-2)")) &&
+        !containsWordOrSubstr(lower, "memo") && !containsWordOrSubstr(lower, "dp");
+    const bool has_merge_sort = containsWordOrSubstr(lower, "merge sort") ||
+        containsWordOrSubstr(lower, "merge_sort") || containsWordOrSubstr(lower, "mergesort");
+    const bool has_binary_search = containsWordOrSubstr(lower, "binary search") ||
+        containsWordOrSubstr(lower, "binary_search");
+
     if (rep.max_loop_nesting_depth >= 3 || containsWordOrSubstr(lower, "matmul") ||
         containsWordOrSubstr(lower, "o(n^3)")) {
         rep.estimated_time_complexity = "O(N^3)";
+    } else if (has_naive_fib_rec || containsWordOrSubstr(lower, "o(2^n)")) {
+        rep.estimated_time_complexity = "O(2^N)";
     } else if (rep.max_loop_nesting_depth == 2 || containsWordOrSubstr(lower, "nested") ||
                containsWordOrSubstr(lower, "all-pairs") || containsWordOrSubstr(lower, "attention") ||
                containsWordOrSubstr(lower, "o(n^2)")) {
         rep.estimated_time_complexity = "O(N^2)";
-    } else if (containsWordOrSubstr(lower, "sort") || containsWordOrSubstr(lower, "binary heap") ||
+    } else if (has_binary_search || containsWordOrSubstr(lower, "o(log n)")) {
+        rep.estimated_time_complexity = "O(log N)";
+    } else if (has_merge_sort || containsWordOrSubstr(lower, "sort") || containsWordOrSubstr(lower, "binary heap") ||
                containsWordOrSubstr(lower, "std::map") || containsWordOrSubstr(lower, "o(n log n)")) {
         rep.estimated_time_complexity = "O(N log N)";
-    } else if (containsWordOrSubstr(lower, "binary search") || containsWordOrSubstr(lower, "o(log n)")) {
-        rep.estimated_time_complexity = "O(log N)";
     } else {
         rep.estimated_time_complexity = "O(N)";
     }
 
-    if (containsWordOrSubstr(lower, "kv cache") || containsWordOrSubstr(lower, "matrix") ||
+    if (has_naive_fib_rec || has_merge_sort ||
+        containsWordOrSubstr(lower, "kv cache") || containsWordOrSubstr(lower, "matrix") ||
         containsWordOrSubstr(lower, "vector<") || containsWordOrSubstr(lower, "buffer") ||
-        containsWordOrSubstr(lower, "alloc")) {
+        containsWordOrSubstr(lower, "alloc") ||
+        (has_fib && (containsWordOrSubstr(lower, "memo") || containsWordOrSubstr(lower, "table")))) {
         rep.estimated_space_complexity = "O(N)";
     } else {
         rep.estimated_space_complexity = "O(1)";
@@ -407,6 +423,35 @@ ColibriAnalysisReport ColibriEngine::analyze(const std::string& query,
             " nested loop scopes.");
         rep.optimization_actions.push_back(
             "Tile/block inner loops for L1/L2 cache locality and hoist loop-invariant expressions.");
+    } else if (has_naive_fib_rec) {
+        rep.key_findings.push_back(
+            "Naive double-recursive Fibonacci exhibits exponential O(2^N) time and O(N) call-stack space.");
+        rep.supporting_evidence.push_back(
+            "Detected overlapping recursive subproblems fib(n-1) + fib(n-2) without memoization.");
+        rep.optimization_actions.push_back(
+            "Use bottom-up iterative DP (O(N) time, O(1) space); guard negative inputs, base cases (0->0, 1->1), and 64-bit overflow for n > 92.");
+    } else if (has_fib) {
+        rep.key_findings.push_back(
+            "Iterative/DP Fibonacci runs in " + rep.estimated_time_complexity +
+            " time and " + rep.estimated_space_complexity + " auxiliary space.");
+        rep.supporting_evidence.push_back(
+            "Detected Fibonacci recurrence; iterative formulation avoids exponential recomputation.");
+        rep.optimization_actions.push_back(
+            "Validate n >= 0, preserve base cases fib(0)=0 / fib(1)=1, and handle large-n integer width.");
+    } else if (has_merge_sort) {
+        rep.key_findings.push_back(
+            "Merge sort achieves deterministic O(N log N) worst-case time, O(N) auxiliary space, and stable ordering.");
+        rep.supporting_evidence.push_back(
+            "Divide-and-conquer split/merge recurrence T(N) = 2T(N/2) + Theta(N).");
+        rep.optimization_actions.push_back(
+            "Use left <= right during merge to preserve stability on equal keys and handle empty/1-element slices cleanly.");
+    } else if (has_binary_search) {
+        rep.key_findings.push_back(
+            "Binary search runs in O(log N) time and O(1) iterative auxiliary space on sorted inputs.");
+        rep.supporting_evidence.push_back(
+            "Monotonic search interval halves at each comparison step.");
+        rep.optimization_actions.push_back(
+            "Compute mid = lo + (hi - lo) / 2 to avoid overflow; verify empty array, 1-element, and not-found (-1) boundary cases.");
     } else {
         rep.key_findings.push_back(
             "Estimated computational complexity is " + rep.estimated_time_complexity +

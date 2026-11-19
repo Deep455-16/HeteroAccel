@@ -3,8 +3,10 @@
 
 #include "hydroxl/HydroXLEngine.h"
 #include "engine/ExecutionEngineRegistry.h"
+#include "generation/GenerationBudget.h"
 #include "hydroxl/GGUFLoader.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 
@@ -282,6 +284,9 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
     std::vector<hydroxl::TokenID> generated_tokens;
     int max_new = ctx.max_tokens;
     if (max_new <= 0) max_new = 256;
+    max_new = std::clamp(max_new,
+                         generation::BudgetLimits::kMinOutputTokens,
+                         generation::BudgetLimits::kMaxOutputTokens);
 
     std::string output_text;
     std::string utf8_pending;
@@ -302,7 +307,7 @@ ExecutionResult HydroXLEngine::doGenerate(const ExecutionContext& ctx,
             static_cast<uint32_t>(logits.size()),
             generated_tokens);
 
-        if (next_tok == tokenizer_->eosToken() || next_tok == hydroxl::TOKEN_INVALID) break;
+        if (tokenizer_->isEndOfGeneration(next_tok) || next_tok == hydroxl::TOKEN_INVALID) break;
 
         generated_tokens.push_back(next_tok);
 

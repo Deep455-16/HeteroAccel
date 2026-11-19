@@ -2,8 +2,10 @@
 // Central Collaborative Multi-Engine Orchestrator implementation.
 
 #include "collaboration/CollaborativeExecutionOrchestrator.h"
+#include "collaboration/ColibriVerifier.h"
 #include "colibri/ColibriEngine.h"
 #include "engine/ExecutionEngineRegistry.h"
+#include "generation/GenerationBudget.h"
 #include "hydroxl/HydroXLEngine.h"
 #include "orchestration/EngineOrchestrator.h"
 #include "orchestration/HardwareDetector.h"
@@ -74,12 +76,27 @@ std::string CollaborativeResult::formatTelemetryReport() const {
             << " | AvgConf: " << std::setprecision(2) << c.average_confidence << "\n";
     }
 
+    out << "\n--- Generation Budget & Prompt Templates ---\n";
+    out << "  Budget            : Context=" << effective_budget.context_tokens
+        << ", MaxOut=" << effective_budget.max_output_tokens
+        << ", TimeBudget=" << effective_budget.time_budget_ms << " ms"
+        << ", MaxRetries=" << effective_budget.max_retries << "\n";
+    if (!prompt_template_summary.empty()) {
+        out << "  Prompt Templates  : " << prompt_template_summary << "\n";
+    }
+    for (const auto& w : budget_warnings) {
+        out << "  Budget Notice     : " << w << "\n";
+    }
+
     out << "\n--- Validation & Fusion Metrics ---\n";
     out << "  Validation Passed : " << (fusion.validation_passed ? "YES" : "NO") << "\n";
     out << "  Overall Confidence: " << std::fixed << std::setprecision(2) << fusion.overall_confidence << "\n";
     out << "  Findings          : " << fusion.raw_findings_count << " raw -> "
         << fusion.deduplicated_findings_count << " deduplicated\n";
     out << "  Conflicts Detected: " << fusion.conflicts_detected << "\n";
+    if (!fusion.rejected_claims.empty()) {
+        out << "  Rejected/Abstained: " << fusion.rejected_claims.size() << "\n";
+    }
     return out.str();
 }
 
@@ -131,13 +148,18 @@ IntermediateResult CollaborativeExecutionOrchestrator::runEngineBackend(
     const CollaborativeTask& task,
     const CollaborativeRequest& req,
     const ModelMemoryProfile& model_profile,
-    bool memory_constrained_mode) {
+    const PartitionPlan& plan) {
+
+    const bool memory_constrained_mode = plan.memory_constrained_mode;
 
     IntermediateResult out;
     out.task_id = task.task_id;
     out.engine_id = engineIdToString(engine);
     out.backend_used = hardwareBackendToString(backend);
     out.orchestrator_backend_id = orchestrator_backend_id;
+    out.template_id = task.template_id;
+    out.template_version = task.template_version;
+    out.provenance_source = out.engine_id + ":" + orchestrator_backend_id;
 
     // 1. Check for custom test executor override first
     {
@@ -156,23 +178,56 @@ IntermediateResult CollaborativeExecutionOrchestrator::runEngineBackend(
             if (out.execution_ms <= 0.0) {
                 out.execution_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             }
-            ResultFusionEngine::enrichIntermediateResult(task, out);
+            if (out.provenance_source.empty()) {
+                out.provenance_source = std::string(engineIdToString(engine)) + ":custom";
+            }
+            if (!out.colibri_abstained) {
+                ResultFusionEngine::enrichIntermediateResult(task, out);
+            }
             return out;
         }
     }
 
     auto t0 = std::chrono::steady_clock::now();
 
-    // 2. Specialized Colibri execution path (passes both original query and upstream
-    //    intermediate context into ColibriEngine::analyze)
+    // 2. Specialized Colibri execution path (optional, capability- & relevance-gated)
     if (engine == EngineId::COLIBRI) {
+        ColibriHealthStatus health = ColibriVerifier::checkHealth(req.enable_colibri);
+        if (!health.available) {
+            out.success = false;
+            out.validated = false;
+            out.colibri_abstained = true;
+            out.colibri_abstention_reason = health.status_detail;
+            out.error = health.status_detail;
+            out.provenance_source = "colibri:unavailable";
+            return out;
+        }
+
+        const bool has_upstream = (task.input_context.find("[Upstream ") != std::string::npos);
+        ColibriRelevanceDecision rel = ColibriVerifier::assessRelevance(
+            req.prompt, plan.query_category, has_upstream);
+        if (!rel.relevant) {
+            out.execution_ms = 0.05;
+            out.success = true;
+            out.validated = false;
+            out.colibri_abstained = true;
+            out.colibri_abstention_reason = rel.reason;
+            out.confidence_score = 0.0f;
+            out.provenance_source = "colibri:abstained";
+            out.structured_result = "[Colibri abstained: " + rel.reason + "]";
+            out.validation_notes = rel.reason;
+            return out;
+        }
+
         std::string err;
         auto inf_eng = resource_mgr_.acquireEngine(
             "colibri_cpu", req.model_path, model_profile.colibri_estimated_bytes,
             memory_constrained_mode, err);
         if (!inf_eng) {
             out.success = false;
-            out.error = "Colibri initialization failed: " + err;
+            out.colibri_abstained = true;
+            out.colibri_abstention_reason = "Colibri initialization failed: " + err;
+            out.error = out.colibri_abstention_reason;
             return out;
         }
 
@@ -182,8 +237,27 @@ IntermediateResult CollaborativeExecutionOrchestrator::runEngineBackend(
             auto t1 = std::chrono::steady_clock::now();
             out.execution_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             if (out.execution_ms < 0.05) out.execution_ms = 0.05;
+
+            ColibriVerificationResult ver = ColibriVerifier::verifyReport(
+                req.prompt, task.input_context, rep, req.colibri_timeout_ms, out.execution_ms);
+
+            out.provenance_source = ver.provenance;
+            out.peak_memory_bytes = colibri_adapter->engine().estimatedWorkspaceBytes();
+            out.gpu_used = false;
+            out.success = true;
+
+            if (ver.abstained) {
+                out.validated = false;
+                out.colibri_abstained = true;
+                out.colibri_abstention_reason = ver.abstention_reason;
+                out.confidence_score = 0.0f;
+                out.structured_result = "[Colibri abstained: " + ver.abstention_reason + "]";
+                out.validation_notes = ver.abstention_reason;
+                return out;
+            }
+
             out.structured_result = rep.formatted_summary;
-            out.key_findings = rep.key_findings;
+            out.key_findings = ver.verified_claims;
             for (const auto& r : rep.detected_risks) {
                 out.key_findings.push_back("Risk: " + r);
             }
@@ -191,13 +265,10 @@ IntermediateResult CollaborativeExecutionOrchestrator::runEngineBackend(
                 out.key_findings.push_back("Optimization: " + a);
             }
             out.supporting_evidence = rep.supporting_evidence;
-            out.confidence_score = rep.confidence_score;
-            out.validated = rep.validated;
+            out.confidence_score = ver.verified_confidence;
+            out.validated = ver.accepted;
             out.tokens_generated = static_cast<int>(rep.formatted_summary.size() / 4) + 1;
             out.tokens_per_second = static_cast<float>(out.tokens_generated / (out.execution_ms / 1000.0));
-            out.peak_memory_bytes = colibri_adapter->engine().estimatedWorkspaceBytes();
-            out.gpu_used = false;
-            out.success = true;
             ResultFusionEngine::enrichIntermediateResult(task, out);
             return out;
         }
@@ -225,18 +296,49 @@ IntermediateResult CollaborativeExecutionOrchestrator::runEngineBackend(
     }
 
     orchestration::InferenceRequest ireq;
-    ireq.prompt = task.input_context.empty() ? req.prompt : task.input_context;
-    ireq.max_new_tokens = req.max_new_tokens_per_task > 0 ? req.max_new_tokens_per_task : 16;
+    ireq.prompt = !task.assembled_prompt.empty()
+                      ? task.assembled_prompt
+                      : (task.input_context.empty() ? req.prompt : task.input_context);
+    ireq.max_new_tokens = plan.effective_budget.max_output_tokens > 0
+                              ? plan.effective_budget.max_output_tokens
+                              : (req.max_new_tokens_per_task > 0 ? req.max_new_tokens_per_task : 64);
     ireq.temperature = req.temperature;
     ireq.top_p = req.top_p;
+    ireq.cancel_flag = req.cancel_flag;
+    ireq.time_budget_ms = plan.effective_budget.time_budget_ms;
+    ireq.stop_sequences = task.stop_sequences;
+    ireq.parse_special = task.uses_control_tokens;
+    ireq.repeat_penalty = 1.1f;
 
+    generation::Deadline budget_deadline(plan.effective_budget.time_budget_ms);
     orchestration::InferenceResult ires;
-    if (backend != HardwareBackend::CPU) {
-        // Coordinate GPU execution lock when running on Vulkan or CUDA
-        auto gpu_lock = resource_mgr_.acquireGpuExecutionLock();
-        ires = inf_eng->run(ireq);
-    } else {
-        ires = inf_eng->run(ireq);
+    int retries_used = 0;
+    const int max_retries = std::max(0, plan.effective_budget.max_retries);
+
+    for (int attempt = 0; attempt <= max_retries; ++attempt) {
+        retries_used = attempt;
+        if (backend != HardwareBackend::CPU) {
+            // Coordinate GPU execution lock when running on Vulkan or CUDA
+            auto gpu_lock = resource_mgr_.acquireGpuExecutionLock();
+            ires = inf_eng->run(ireq);
+        } else {
+            ires = inf_eng->run(ireq);
+        }
+
+        auto isWhitespaceOnly = [](const std::string& s) {
+            for (unsigned char c : s) {
+                if (c > ' ') return false;
+            }
+            return true;
+        };
+        const bool cancelled_or_timed_out =
+            (req.cancel_flag && req.cancel_flag->load()) ||
+            ires.finish_reason == generation::finish::kCancelled ||
+            ires.finish_reason == generation::finish::kTimeBudget ||
+            budget_deadline.expired();
+        if (!ires.success || !isWhitespaceOnly(ires.output_text) || cancelled_or_timed_out) {
+            break;
+        }
     }
 
     auto t1 = std::chrono::steady_clock::now();
@@ -249,6 +351,8 @@ IntermediateResult CollaborativeExecutionOrchestrator::runEngineBackend(
     out.gpu_used = ires.gpu_used;
     out.success = ires.success;
     out.error = ires.error;
+    out.finish_reason = ires.finish_reason;
+    out.retries_used = retries_used;
 
     ResultFusionEngine::enrichIntermediateResult(task, out);
     return out;
@@ -258,7 +362,7 @@ IntermediateResult CollaborativeExecutionOrchestrator::executeSingleTask(
     CollaborativeTask& task,
     const CollaborativeRequest& req,
     const ModelMemoryProfile& model_profile,
-    bool memory_constrained_mode) {
+    const PartitionPlan& plan) {
 
     if (req.cancel_flag && req.cancel_flag->load()) {
         task.state = TaskState::CANCELLED;
@@ -277,10 +381,11 @@ IntermediateResult CollaborativeExecutionOrchestrator::executeSingleTask(
         task,
         req,
         model_profile,
-        memory_constrained_mode);
+        plan);
 
     // 1. Hardware backend fallback (GPU -> CPU within the same engine)
-    if (!res.success && task.assigned_backend != HardwareBackend::CPU) {
+    if (!res.success && task.assigned_backend != HardwareBackend::CPU &&
+        !(req.cancel_flag && req.cancel_flag->load())) {
         std::string primary_err = res.error;
         std::string cpu_backend_id = (task.assigned_engine == EngineId::HYDROXL)
                                          ? "hydroxl_cpu"
@@ -296,7 +401,7 @@ IntermediateResult CollaborativeExecutionOrchestrator::executeSingleTask(
             fallback_task,
             req,
             model_profile,
-            memory_constrained_mode);
+            plan);
 
         if (cpu_res.success) {
             task.assigned_backend = HardwareBackend::CPU;
@@ -308,7 +413,11 @@ IntermediateResult CollaborativeExecutionOrchestrator::executeSingleTask(
     }
 
     // 2. Cross-engine fallback (if the assigned engine itself failed and allow_engine_fallback is enabled)
-    if (!res.success && req.allow_engine_fallback) {
+    // Skip redundant neural re-execution when optional Colibri abstained/unavailable in multi-task runs.
+    const bool optional_colibri_unavailable =
+        (task.assigned_engine == EngineId::COLIBRI && res.colibri_abstained && plan.tasks.size() > 1);
+    if (!res.success && req.allow_engine_fallback && !optional_colibri_unavailable &&
+        !(req.cancel_flag && req.cancel_flag->load())) {
         std::string primary_eng_err = res.error;
         std::vector<std::pair<EngineId, std::string>> backup_candidates;
         if (task.assigned_engine == EngineId::HYDROXL) {
@@ -335,7 +444,7 @@ IntermediateResult CollaborativeExecutionOrchestrator::executeSingleTask(
                 fb_task,
                 req,
                 model_profile,
-                memory_constrained_mode);
+                plan);
 
             if (fb_res.success) {
                 task.assigned_engine = cand.first;
@@ -397,6 +506,21 @@ CollaborativeResult CollaborativeExecutionOrchestrator::executeStreaming(
     result.query_category = plan.query_category;
     result.tasks = plan.tasks;
     result.execution_waves = plan.waves;
+    result.effective_budget = plan.effective_budget;
+    result.budget_warnings = plan.budget_warnings;
+    {
+        std::ostringstream ts;
+        bool first_t = true;
+        for (const auto& t : plan.tasks) {
+            if (!t.template_id.empty()) {
+                if (!first_t) ts << ", ";
+                ts << t.task_id << "=" << t.template_id << "@v" << t.template_version
+                   << (t.uses_control_tokens ? "(chatml)" : "(plain)");
+                first_t = false;
+            }
+        }
+        result.prompt_template_summary = ts.str();
+    }
 
     // Map task_id -> index in result.tasks
     std::map<std::string, size_t> task_index;
@@ -473,7 +597,7 @@ CollaborativeResult CollaborativeExecutionOrchestrator::executeStreaming(
             futures.reserve(ready_indices.size());
             for (size_t idx : ready_indices) {
                 futures.push_back(std::async(std::launch::async, [this, idx, &result, &req, &model_profile, &plan]() {
-                    executeSingleTask(result.tasks[idx], req, model_profile, plan.memory_constrained_mode);
+                    executeSingleTask(result.tasks[idx], req, model_profile, plan);
                 }));
             }
             for (auto& f : futures) {
@@ -485,7 +609,7 @@ CollaborativeResult CollaborativeExecutionOrchestrator::executeStreaming(
                 auto now = std::chrono::steady_clock::now();
                 result.tasks[idx].queue_wait_ms =
                     std::chrono::duration<double, std::milli>(now - wave_t0).count();
-                executeSingleTask(result.tasks[idx], req, model_profile, plan.memory_constrained_mode);
+                executeSingleTask(result.tasks[idx], req, model_profile, plan);
             }
         }
     }

@@ -1,4 +1,5 @@
 #include "llm/LlamaCppEngine.h"
+#include "generation/GenerationBudget.h"
 
 // llama.cpp C API — only included here, not in any header.
 #include "llama.h"
@@ -374,14 +375,34 @@ void LlamaCppEngine::runDecode(std::vector<int32_t>& tokens, LlmResult& result,
     // Token generation
     // -----------------------------------------------------------------------
 
-    // Build sampler chain: temperature → dist (multinomial)
+    // Build sampler chain: optional penalties -> temperature -> dist (multinomial)
     llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     llama_sampler* sampler = llama_sampler_chain_init(sparams);
+    if (config_.repeat_penalty > 1.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(64));
+        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, config_.repeat_penalty, 0.0f, 0.0f));
+    }
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(config_.temperature));
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(config_.seed));
 
     std::string output;
     output.reserve(256);
+
+    // Phase 33: wall-clock budget, stop sequences, real streaming, finish reason.
+    generation::Deadline deadline(config_.time_budget_ms);
+    generation::StopSequenceFilter stop_filter(config_.stop_sequences);
+    std::string finish_reason = generation::finish::kMaxTokens;
+    std::string utf8_pending;
+    bool stop_hit = false;
+    bool stream_cancelled = false;
+    bool cancelled = false;
+    TokenStreamCallback stream_cb = std::move(stream_cb_);
+    stream_cb_ = nullptr;
+    auto emit = [&](const std::string& text, int tok_id) {
+        if (text.empty()) return;
+        output += text;
+        if (stream_cb && !stream_cb(text, tok_id)) stream_cancelled = true;
+    };
 
     double t_gen_start = nowMs();
     int n_generated = 0;
@@ -389,29 +410,56 @@ void LlamaCppEngine::runDecode(std::vector<int32_t>& tokens, LlmResult& result,
     for (int i = 0; i < config_.max_new_tokens; ++i) {
         if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
             result.error = "Generation cancelled";
+            finish_reason = generation::finish::kCancelled;
+            cancelled = true;
+            break;
+        }
+        if (deadline.expired()) {
+            finish_reason = generation::finish::kTimeBudget;
             break;
         }
 
         llama_token new_token = llama_sampler_sample(sampler, ctx_, -1);
 
         // End-of-generation token?
-        if (llama_token_is_eog(vocab, new_token)) break;
+        if (llama_vocab_is_eog(vocab, new_token)) {
+            finish_reason = generation::finish::kEos;
+            break;
+        }
 
-        // Token → text piece
+        // Token -> text piece (complete UTF-8 codepoints only)
         char piece[256];
         int piece_len = llama_token_to_piece(vocab, new_token,
                                               piece, static_cast<int32_t>(sizeof(piece)),
                                               /* lstrip = */ 0,
                                               /* special = */ false);
         if (piece_len > 0) {
-            output.append(piece, static_cast<size_t>(piece_len));
+            utf8_pending.append(piece, static_cast<size_t>(piece_len));
+            std::string complete = utf8_pending;
+            generation::trimIncompleteUtf8Tail(complete);
+            utf8_pending.erase(0, complete.size());
+            bool hit = false;
+            emit(stop_filter.feed(complete, hit), static_cast<int>(new_token));
+            if (hit) stop_hit = true;
         }
         result.output_token_ids.push_back(static_cast<int>(new_token));
+
+        if (stop_hit) {
+            finish_reason = generation::finish::kStopSequence;
+            break;
+        }
+        if (stream_cancelled) {
+            result.error = "Generation cancelled";
+            finish_reason = generation::finish::kCancelled;
+            cancelled = true;
+            break;
+        }
 
         // Advance context: single-token decode
         llama_pos current_pos = static_cast<llama_pos>(tokens.size() + i);
         if (current_pos >= config_.n_ctx) {
             // Context limit reached
+            finish_reason = generation::finish::kContextLimit;
             break;
         }
 
@@ -419,11 +467,23 @@ void LlamaCppEngine::runDecode(std::vector<int32_t>& tokens, LlmResult& result,
         int ret = llama_decode(ctx_, next);
         if (ret != 0) {
             // Treat as soft stop (context may be full)
+            finish_reason = generation::finish::kContextLimit;
             break;
         }
 
         ++n_generated;
     }
+
+    if (!stop_hit && !stream_cancelled && !cancelled) {
+        emit(stop_filter.flush(), result.output_token_ids.empty() ? 0 : result.output_token_ids.back());
+        if (stream_cancelled) {
+            result.error = "Generation cancelled";
+            finish_reason = generation::finish::kCancelled;
+            cancelled = true;
+        }
+    }
+    // A token limit may cut a multibyte character in half; utf8_pending is dropped.
+    result.finish_reason = finish_reason;
 
     result.generation_ms = nowMs() - t_gen_start;
 
@@ -438,7 +498,7 @@ void LlamaCppEngine::runDecode(std::vector<int32_t>& tokens, LlmResult& result,
     result.tokens_per_sec = (result.generation_ms > 0.0)
                                 ? (n_generated / (result.generation_ms / 1000.0))
                                 : 0.0;
-    result.success = true;
+    result.success = !cancelled;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,14 +523,14 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
                                   prompt.c_str(), static_cast<int32_t>(prompt.size()),
                                   tokens.data(), static_cast<int32_t>(tokens.size()),
                                   /* add_special = */ true,
-                                  /* parse_special = */ true);
+                                  /* parse_special = */ config_.parse_special);
     if (n_prompt < 0) {
         // Buffer was too small — resize to exact requirement and retry
         tokens.resize(static_cast<size_t>(-n_prompt));
         n_prompt = llama_tokenize(vocab,
                                   prompt.c_str(), static_cast<int32_t>(prompt.size()),
                                   tokens.data(), static_cast<int32_t>(tokens.size()),
-                                  true, true);
+                                  true, config_.parse_special);
     }
     if (n_prompt <= 0) {
         result.error = "Tokenization failed (returned " + std::to_string(n_prompt) + ")";
@@ -481,6 +541,7 @@ LlmResult LlamaCppEngine::infer(const std::string& prompt, std::atomic<bool>* ca
 
     if (cancel_flag && cancel_flag->load(std::memory_order_acquire)) {
         result.error = "Cancelled before evaluation";
+        result.finish_reason = generation::finish::kCancelled;
         return result;
     }
 

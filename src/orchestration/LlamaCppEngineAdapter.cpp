@@ -1,5 +1,8 @@
 // src/orchestration/LlamaCppEngineAdapter.cpp
 #include "orchestration/LlamaCppEngineAdapter.h"
+#include "generation/GenerationBudget.h"
+
+#include <algorithm>
 
 namespace agr {
 namespace orchestration {
@@ -44,63 +47,55 @@ bool LlamaCppEngineAdapter::initialize(const std::string& model_path, std::strin
 }
 
 InferenceResult LlamaCppEngineAdapter::run(const InferenceRequest& req) {
-    std::lock_guard<std::mutex> lk(mu_);
     InferenceResult out;
-    out.backend_used = backend_id_;
-    if (!ready_ || !engine_) {
-        out.error = "llama.cpp adapter is not initialized";
-        return out;
-    }
-    engine_->setGeneration(req.max_new_tokens > 0 ? req.max_new_tokens : 16, req.temperature, 42u);
-    LlmResult r = !req.prompt_token_ids.empty()
-                      ? engine_->inferTokens(req.prompt_token_ids)
-                      : engine_->infer(req.prompt.empty() ? "The capital of France is" : req.prompt);
-    last_logits_ = r.first_token_logits;
-
-    out.success           = r.success;
-    out.error             = r.error;
-    out.output_text       = r.output;
-    out.output_token_ids  = r.output_token_ids;
-    out.prompt_tokens     = r.prompt_tokens;
-    out.output_tokens     = static_cast<int>(r.output_token_ids.size());
-    out.tokens_per_second = static_cast<float>(r.tokens_per_sec);
-    out.gpu_used          = (r.backend == "CUDA" || r.backend == "Vulkan");
-    if (r.device_total_bytes > 0) {
-        // Device-resident bytes in use after load (weights + KV + compute buffers).
-        out.peak_memory_bytes = r.device_total_bytes > r.device_free_bytes
-                                    ? r.device_total_bytes - r.device_free_bytes : 0;
-    }
+    run_stream(req, nullptr, out);
     return out;
 }
 
 bool LlamaCppEngineAdapter::run_stream(const InferenceRequest& req,
                                        StreamCallback cb,
                                        InferenceResult& result_out) {
-    result_out = run(req);
-    if (!result_out.success) {
+    std::lock_guard<std::mutex> lk(mu_);
+    result_out = InferenceResult();
+    result_out.backend_used = backend_id_;
+    if (!ready_ || !engine_) {
+        result_out.error = "llama.cpp adapter is not initialized";
         return false;
     }
-    if (cb && !result_out.output_text.empty()) {
-        // Deliver token chunks or text segment to stream callback
-        size_t n_ids = result_out.output_token_ids.size();
-        if (n_ids <= 1) {
-            int tid = n_ids == 1 ? result_out.output_token_ids[0] : 0;
-            cb(result_out.output_text, tid);
-        } else {
-            // Split proportionally across generated token IDs for incremental streaming
-            size_t len = result_out.output_text.size();
-            size_t pos = 0;
-            for (size_t i = 0; i < n_ids; ++i) {
-                size_t next_pos = (i + 1 == n_ids) ? len : ((i + 1) * len) / n_ids;
-                std::string chunk = result_out.output_text.substr(pos, next_pos - pos);
-                pos = next_pos;
-                if (!cb(chunk, result_out.output_token_ids[i])) {
-                    break;
-                }
-            }
-        }
+
+    int max_new = req.max_new_tokens > 0 ? req.max_new_tokens : 16;
+    max_new = std::min(max_new, generation::BudgetLimits::kMaxOutputTokens);
+
+    engine_->setGeneration(max_new, req.temperature, 42u);
+    engine_->setBudget(req.time_budget_ms, req.stop_sequences);
+    engine_->setParseSpecial(req.parse_special);
+    engine_->setRepeatPenalty(req.repeat_penalty);
+    if (cb) {
+        engine_->setStreamCallback(cb);
+    } else {
+        engine_->setStreamCallback(nullptr);
     }
-    return true;
+
+    LlmResult r = !req.prompt_token_ids.empty()
+                      ? engine_->inferTokens(req.prompt_token_ids, req.cancel_flag)
+                      : engine_->infer(req.prompt.empty() ? "The capital of France is" : req.prompt, req.cancel_flag);
+    last_logits_ = r.first_token_logits;
+
+    result_out.success           = r.success;
+    result_out.error             = r.error;
+    result_out.output_text       = r.output;
+    result_out.output_token_ids  = r.output_token_ids;
+    result_out.prompt_tokens     = r.prompt_tokens;
+    result_out.output_tokens     = static_cast<int>(r.output_token_ids.size());
+    result_out.tokens_per_second = static_cast<float>(r.tokens_per_sec);
+    result_out.finish_reason     = r.finish_reason;
+    result_out.gpu_used          = (r.backend == "CUDA" || r.backend == "Vulkan");
+    if (r.device_total_bytes > 0) {
+        // Device-resident bytes in use after load (weights + KV + compute buffers).
+        result_out.peak_memory_bytes = r.device_total_bytes > r.device_free_bytes
+                                           ? r.device_total_bytes - r.device_free_bytes : 0;
+    }
+    return result_out.success;
 }
 
 void LlamaCppEngineAdapter::shutdown() {

@@ -64,7 +64,7 @@ private:
         CollaborativeTask& task,
         const CollaborativeRequest& req,
         const ModelMemoryProfile& model_profile,
-        bool memory_constrained_mode);
+        const PartitionPlan& plan);
 
     IntermediateResult runEngineBackend(
         EngineId engine,
@@ -73,7 +73,7 @@ private:
         const CollaborativeTask& task,
         const CollaborativeRequest& req,
         const ModelMemoryProfile& model_profile,
-        bool memory_constrained_mode);
+        const PartitionPlan& plan);
 
     CollaborativeResourceManager resource_mgr_;
     mutable std::mutex custom_exec_mu_;

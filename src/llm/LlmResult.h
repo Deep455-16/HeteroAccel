@@ -35,6 +35,10 @@ struct LlmResult {
     int     prompt_tokens  = 0;
     int     output_tokens  = 0;
     double  tokens_per_sec = 0.0;     // output_tokens / (generation_ms / 1000)
+
+    // Phase 33: why generation ended ("eos", "max_tokens", "stop_sequence",
+    // "time_budget", "cancelled", "context_limit").
+    std::string finish_reason;
 };
 
 } // namespace agr

@@ -14,6 +14,7 @@
 #include "hydroxl/HydroXLTokenizer.h"
 #include "hydroxl/GGUFLoader.h"
 #include "collaboration/CollaborativeExecutionOrchestrator.h"
+#include "generation/GenerationBudget.h"
 
 #include <algorithm>
 #include <atomic>
@@ -423,10 +424,13 @@ HaResult ha_infer(HaSession session, const HaInferParams* params) {
 
     try {
         agr::orchestration::InferenceRequest req;
-        req.max_new_tokens = (params->max_new_tokens > 0) ? params->max_new_tokens : 16;
+        req.max_new_tokens = (params->max_new_tokens > 0)
+                                 ? std::min(params->max_new_tokens, agr::generation::BudgetLimits::kMaxOutputTokens)
+                                 : 16;
         req.temperature = params->temperature;
         req.top_p = (params->top_p > 0.0f) ? params->top_p : 0.95f;
         req.stream = false;
+        req.cancel_flag = &session->cancelled;
 
         if (params->prompt && params->prompt[0] != '\0') {
             req.prompt = params->prompt;
@@ -536,10 +540,13 @@ HaError ha_infer_stream(HaSession session, const HaInferParams* params,
 
     try {
         agr::orchestration::InferenceRequest req;
-        req.max_new_tokens = (params->max_new_tokens > 0) ? params->max_new_tokens : 16;
+        req.max_new_tokens = (params->max_new_tokens > 0)
+                                 ? std::min(params->max_new_tokens, agr::generation::BudgetLimits::kMaxOutputTokens)
+                                 : 16;
         req.temperature = params->temperature;
         req.top_p = (params->top_p > 0.0f) ? params->top_p : 0.95f;
         req.stream = true;
+        req.cancel_flag = &session->cancelled;
 
         if (params->prompt && params->prompt[0] != '\0') {
             req.prompt = params->prompt;
@@ -726,7 +733,7 @@ HaError ha_collaborate_stream(HaSession session,
             creq.model_path = session->model->path;
         }
         creq.prompt = params->prompt;
-        creq.max_new_tokens_per_task = (params->max_new_tokens > 0) ? params->max_new_tokens : 24;
+        creq.max_new_tokens_per_task = (params->max_new_tokens > 0) ? params->max_new_tokens : 0;
         creq.temperature = params->temperature;
         creq.top_p = (params->top_p > 0.0f) ? params->top_p : 0.95f;
         creq.max_ram_budget_bytes = params->max_ram_budget_bytes;

@@ -8,6 +8,7 @@
 #pragma once
 
 #include "engine/EngineCapability.h"
+#include "generation/GenerationBudget.h"
 
 #include <atomic>
 #include <cstddef>
@@ -149,6 +150,15 @@ struct IntermediateResult {
     bool        gpu_used = false;
     bool        success = false;
     std::string error;
+
+    // Phase 33: provenance, generation termination, template tracking, Colibri abstention
+    std::string finish_reason;
+    std::string provenance_source;
+    std::string template_id;
+    int         template_version = 0;
+    bool        colibri_abstained = false;
+    std::string colibri_abstention_reason;
+    int         retries_used = 0;
 };
 
 /// Single task node in the collaborative dependency DAG (Section 7).
@@ -157,6 +167,11 @@ struct CollaborativeTask {
     std::string description;
     TaskType    task_type = TaskType::STRUCTURAL_AND_REASONING;
     std::string input_context;
+    std::string assembled_prompt;         ///< Phase 33 versioned template prompt (empty if raw)
+    std::string template_id;
+    int         template_version = 0;
+    bool        uses_control_tokens = false;
+    std::vector<std::string> stop_sequences;
     EngineCapabilitySet required_capabilities;
 
     EngineId        assigned_engine  = EngineId::HYDROXL;
@@ -205,6 +220,11 @@ struct FusionReport {
     float                    overall_confidence = 0.0f;
     std::vector<EngineContributionSummary> engine_contributions;
     std::string              synthesized_response;
+
+    // Phase 33: evidence-driven fusion provenance & rejected/raw tracking
+    std::vector<std::string> rejected_claims;
+    std::vector<std::string> raw_component_outputs;
+    std::vector<std::string> source_attributions;
 };
 
 /// Shared resource and memory coordination telemetry (Sections 9 & 11).
@@ -227,16 +247,26 @@ struct CollaborativeRequest {
     std::string model_path;
     std::string prompt;
     std::vector<std::pair<std::string, std::string>> conversation_history; ///< (role, content)
-    int         max_new_tokens_per_task = 24;
+    int         max_new_tokens_per_task = 0;  ///< 0 = use TaskProfile default
     float       temperature = 0.0f;
     float       top_p = 0.95f;
-    int         n_ctx = 512;
+    int         n_ctx = 0;                    ///< 0 = use TaskProfile default
 
     // Optional execution & resource constraints
     size_t      max_ram_budget_bytes = 0;     ///< 0 = auto (80% of available system RAM)
     bool        allow_parallel_waves = true;  ///< False forces strictly sequential execution
     bool        allow_engine_fallback = true; ///< Fallback to surviving engines if one fails
     std::string preferred_gpu_backend;        ///< "" = auto, "cpu", "vulkan", "cuda"
+
+    // Phase 33: generation budgets, prompt isolation, optional Colibri verification
+    generation::TaskProfile task_profile = generation::TaskProfile::AUTO;
+    int         time_budget_ms = 0;           ///< 0 = use TaskProfile default
+    int         max_retries = -1;             ///< -1 = use TaskProfile default
+    std::vector<std::string> stop_sequences;
+    std::string untrusted_context;            ///< Retrieval/tool text wrapped as <data>
+    bool        enable_colibri = true;        ///< Optional verifier: false disables Colibri
+    int         colibri_timeout_ms = 5000;    ///< Bounded timeout for Colibri static verification
+    bool        use_prompt_templates = true;  ///< Assemble prompts through PromptRegistry
 
     std::atomic<bool>* cancel_flag = nullptr;
 };
@@ -262,6 +292,11 @@ struct CollaborativeResult {
     double      execution_ms = 0.0;
     double      fusion_ms = 0.0;
     double      total_ms = 0.0;
+
+    // Phase 33: effective budget & prompt template audit metadata
+    generation::GenerationBudget effective_budget;
+    std::vector<std::string>     budget_warnings;
+    std::string                  prompt_template_summary;
 
     /// Helper: returns true if the given engine ("hydroxl", "llama.cpp", "colibri")
     /// completed at least one task in this collaborative run.

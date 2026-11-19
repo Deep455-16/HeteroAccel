@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <functional>
+#include <utility>
 
 // Forward-declare llama.cpp opaque types so callers of this header
 // do NOT need to include llama.h (keeping llama.cpp out of the wider codebase).
@@ -55,6 +57,20 @@ public:
     }
     int contextSize() const { return config_.n_ctx; }
 
+    // Phase 33: per-run wall-clock budget and stop sequences (does not reload).
+    void setBudget(int time_budget_ms, std::vector<std::string> stop_sequences) {
+        config_.time_budget_ms = time_budget_ms;
+        config_.stop_sequences = std::move(stop_sequences);
+    }
+    void setParseSpecial(bool parse_special) { config_.parse_special = parse_special; }
+    void setRepeatPenalty(float penalty) { config_.repeat_penalty = penalty; }
+
+    // Phase 33: real per-token streaming. The callback receives complete UTF-8
+    // text pieces as they are generated; returning false cancels generation.
+    // Cleared automatically after each infer()/inferTokens() call.
+    using TokenStreamCallback = std::function<bool(const std::string& piece, int token_id)>;
+    void setStreamCallback(TokenStreamCallback cb) { stream_cb_ = std::move(cb); }
+
     // Release model, context, sampler and free llama.cpp backend.
     // Safe to call multiple times.
     void shutdown();
@@ -85,6 +101,7 @@ private:
     llama_context* ctx_     = nullptr;
 
     LlmConfig   config_;
+    TokenStreamCallback stream_cb_;
     bool        initialized_     = false;
     bool        backendInited_   = false;
 

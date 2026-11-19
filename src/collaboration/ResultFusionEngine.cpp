@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <iomanip>
 #include <map>
 #include <set>
 #include <sstream>
@@ -78,6 +79,7 @@ std::vector<std::string> splitIntoSentencesOrLines(const std::string& text) {
 }
 
 std::string detectComplexityClaim(const std::string& lower) {
+    if (lower.find("o(2^n)") != std::string::npos) return "O(2^N)";
     if (lower.find("o(n^3)") != std::string::npos) return "O(N^3)";
     if (lower.find("o(n^2)") != std::string::npos) return "O(N^2)";
     if (lower.find("o(n log n)") != std::string::npos) return "O(N log N)";
@@ -176,6 +178,15 @@ void ResultFusionEngine::enrichIntermediateResult(
         result.confidence_score = 0.0f;
         result.validated = false;
         result.validation_notes = "Task failed: " + result.error;
+        return;
+    }
+
+    if (result.colibri_abstained) {
+        result.confidence_score = 0.0f;
+        result.validated = false;
+        if (result.validation_notes.empty()) {
+            result.validation_notes = result.colibri_abstention_reason;
+        }
         return;
     }
 
@@ -288,6 +299,7 @@ FusionReport ResultFusionEngine::fuse(
     bool all_validated = true;
     float confidence_sum = 0.0f;
     int completed_tasks = 0;
+    int confident_tasks = 0;
 
     for (const auto& t : tasks) {
         std::string eid = t.output.engine_id.empty()
@@ -298,6 +310,40 @@ FusionReport ResultFusionEngine::fuse(
         cs.tasks_assigned += 1;
 
         if (t.state == TaskState::COMPLETED && t.output.success) {
+            // Preserve raw component output for debugging & provenance inspection
+            {
+                std::ostringstream raw_os;
+                raw_os << "[" << eid << " | task=" << t.task_id
+                       << " | backend=" << (t.output.backend_used.empty()
+                                                ? hardwareBackendToString(t.assigned_backend)
+                                                : t.output.backend_used);
+                if (!t.output.provenance_source.empty()) {
+                    raw_os << " | provenance=" << t.output.provenance_source;
+                }
+                if (!t.output.finish_reason.empty()) {
+                    raw_os << " | finish=" << t.output.finish_reason;
+                }
+                raw_os << "] " << t.output.structured_result;
+                report.raw_component_outputs.push_back(raw_os.str());
+            }
+
+            if (t.output.colibri_abstained) {
+                cs.tasks_completed += 1;
+                cs.primary_backend_used = t.output.backend_used.empty()
+                                              ? std::string(hardwareBackendToString(t.assigned_backend))
+                                              : t.output.backend_used;
+                cs.total_execution_ms += t.output.execution_ms;
+                report.rejected_claims.push_back(
+                    "[" + eid + "] abstained: " +
+                    (t.output.colibri_abstention_reason.empty()
+                         ? std::string("insufficient evidence")
+                         : t.output.colibri_abstention_reason));
+                report.source_attributions.push_back(
+                    "[" + eid + "] backend=" + cs.primary_backend_used +
+                    " status=abstained provenance=" + t.output.provenance_source);
+                continue;
+            }
+
             bool raw_invalid_conf = std::isnan(t.output.confidence_score) ||
                                     std::isinf(t.output.confidence_score) ||
                                     t.output.confidence_score < 0.0f ||
@@ -321,18 +367,41 @@ FusionReport ResultFusionEngine::fuse(
                 cs.peak_memory_bytes = t.output.peak_memory_bytes;
             }
 
+            {
+                std::ostringstream attr;
+                attr << "[" << eid << "] backend=" << cs.primary_backend_used;
+                if (!t.output.provenance_source.empty()) attr << " provenance=" << t.output.provenance_source;
+                if (!t.output.template_id.empty()) {
+                    attr << " template=" << t.output.template_id << "@v" << t.output.template_version;
+                }
+                attr << " conf=" << std::fixed << std::setprecision(2) << clean_conf
+                     << " validated=" << (task_validated ? "yes" : "no");
+                report.source_attributions.push_back(attr.str());
+            }
+
             if (!task_validated) {
                 all_validated = false;
             }
             confidence_sum += clean_conf;
             ++completed_tasks;
+            ++confident_tasks;
 
+            const bool accept_claims = task_validated && clean_conf >= 0.40f;
             for (const auto& f : t.output.key_findings) {
                 std::string clean = trimCopy(f);
-                if (!clean.empty() && !isRepetitiveOutput(clean) && !isMalformedOutput(clean)) {
-                    float f_conf = task_validated ? clean_conf : std::min(clean_conf, 0.30f);
-                    all_findings.push_back({clean, eid, f_conf, t.task_type, task_validated});
+                if (clean.empty() || isRepetitiveOutput(clean) || isMalformedOutput(clean)) {
+                    if (!clean.empty()) {
+                        report.rejected_claims.push_back("[" + eid + "] rejected degenerate claim: " + clean);
+                    }
+                    continue;
                 }
+                if (!accept_claims) {
+                    report.rejected_claims.push_back("[" + eid + "] rejected low-trust claim (validated=" +
+                                                     std::string(task_validated ? "yes" : "no") +
+                                                     "): " + clean);
+                }
+                float f_conf = task_validated ? clean_conf : std::min(clean_conf, 0.30f);
+                all_findings.push_back({clean, eid, f_conf, t.task_type, task_validated});
             }
             for (const auto& ev : t.output.supporting_evidence) {
                 std::string clean_ev = trimCopy(ev);
@@ -342,6 +411,9 @@ FusionReport ResultFusionEngine::fuse(
             }
         } else {
             cs.tasks_failed += 1;
+            if (!t.output.error.empty()) {
+                report.rejected_claims.push_back("[" + eid + "] task failed: " + t.output.error);
+            }
         }
     }
 
@@ -396,17 +468,22 @@ FusionReport ResultFusionEngine::fuse(
         for (const auto& kv : engine_complexity_claims) {
             if (kv.second != first_val) {
                 ++report.conflicts_detected;
-                std::string authoritative = !colibri_authoritative_complexity.empty()
-                                                ? colibri_authoritative_complexity
-                                                : kv.second;
-                report.resolved_conflicts.push_back(
-                    "Complexity estimate divergence between " + first_eng + " (" + first_val +
-                    ") and " + kv.first + " (" + kv.second +
-                    ") resolved in favor of static control-flow bound " + authoritative +
-                    " (structural proof overrides majority heuristic voting).");
-                report.preserved_disagreements.push_back(
-                    first_eng + " reported " + first_val + " (average/best-case path) while " +
-                    kv.first + " reported " + kv.second + " (worst-case structural bound).");
+                if (!colibri_authoritative_complexity.empty()) {
+                    report.resolved_conflicts.push_back(
+                        "Complexity estimate divergence between " + first_eng + " (" + first_val +
+                        ") and " + kv.first + " (" + kv.second +
+                        ") resolved in favor of static control-flow bound " + colibri_authoritative_complexity +
+                        " (structural proof overrides majority heuristic voting).");
+                    report.preserved_disagreements.push_back(
+                        first_eng + " reported " + first_val + " while " +
+                        kv.first + " reported " + kv.second + " (authoritative bound: " +
+                        colibri_authoritative_complexity + ").");
+                } else {
+                    report.preserved_disagreements.push_back(
+                        "UNRESOLVED complexity disagreement: " + first_eng + " reported " + first_val +
+                        " while " + kv.first + " reported " + kv.second +
+                        " (no deterministic Colibri proof available).");
+                }
                 break;
             }
         }
@@ -444,9 +521,14 @@ FusionReport ResultFusionEngine::fuse(
                          comp != colibri_authoritative_complexity);
 
         bool found_match = false;
+        // Only merge findings across engines into multi-engine corroboration when BOTH
+        // are validated and meet the confidence threshold (never fabricate corroboration).
+        const bool can_corroborate_tf = tf.validated && tf.confidence >= 0.50f;
         for (auto& m : merged) {
+            const bool can_corroborate_m = m.validated && m.best_confidence >= 0.50f;
             float sim = computeSimilarity(tf.text, m.text);
-            if (sim >= 0.55f && m.disputed_by_structural_proof == disputed) {
+            if (can_corroborate_tf && can_corroborate_m &&
+                sim >= 0.55f && m.disputed_by_structural_proof == disputed) {
                 found_match = true;
                 if (std::find(m.engines.begin(), m.engines.end(), tf.engine_id) == m.engines.end()) {
                     m.engines.push_back(tf.engine_id);
@@ -514,20 +596,28 @@ FusionReport ResultFusionEngine::fuse(
 
     report.deduplicated_findings_count = static_cast<int>(report.deduplicated_findings.size());
     report.validation_passed = all_validated && (completed_tasks > 0);
-    report.overall_confidence = completed_tasks > 0
-                                    ? sanitizeConfidence(confidence_sum / static_cast<float>(completed_tasks))
+    report.overall_confidence = confident_tasks > 0
+                                    ? sanitizeConfidence(confidence_sum / static_cast<float>(confident_tasks))
                                     : 0.0f;
 
     // 4. Synthesize one coherent, unified final response (never raw concatenation)
     std::string hydroxl_text, llamacpp_text;
+    bool hydroxl_trustworthy = false, llamacpp_trustworthy = false;
     std::vector<std::string> colibri_highlights;
+    std::string colibri_abstention;
 
     for (const auto& t : tasks) {
         if (t.state != TaskState::COMPLETED || !t.output.success) continue;
+        if (t.output.colibri_abstained) {
+            colibri_abstention = t.output.colibri_abstention_reason;
+            continue;
+        }
         if (t.assigned_engine == EngineId::HYDROXL && hydroxl_text.empty()) {
             hydroxl_text = trimCopy(t.output.structured_result);
+            hydroxl_trustworthy = t.output.validated && sanitizeConfidence(t.output.confidence_score) >= 0.50f;
         } else if (t.assigned_engine == EngineId::LLAMA_CPP && llamacpp_text.empty()) {
             llamacpp_text = trimCopy(t.output.structured_result);
+            llamacpp_trustworthy = t.output.validated && sanitizeConfidence(t.output.confidence_score) >= 0.50f;
         } else if (t.assigned_engine == EngineId::COLIBRI) {
             for (const auto& f : t.output.key_findings) {
                 colibri_highlights.push_back(trimCopy(f));
@@ -543,8 +633,8 @@ FusionReport ResultFusionEngine::fuse(
     synth << "1. Core Reasoning & Implementation Synthesis:\n";
     if (!hydroxl_text.empty() && !llamacpp_text.empty()) {
         float overlap = computeSimilarity(hydroxl_text, llamacpp_text);
-        if (overlap >= 0.70f) {
-            // High agreement between HydroXL and llama.cpp: emit once as corroborated consensus
+        if (overlap >= 0.70f && hydroxl_trustworthy && llamacpp_trustworthy) {
+            // High agreement between validated HydroXL and llama.cpp outputs
             synth << "   - [Corroborated Consensus (HydroXL + llama.cpp)]: "
                   << original_prompt << " -> " << hydroxl_text << "\n";
         } else {
@@ -561,15 +651,18 @@ FusionReport ResultFusionEngine::fuse(
         synth << "   - [Direct Structural & Metadata Inspection (Colibri)]: Executed deterministically without redundant neural LLM invocation.\n";
     }
 
-    // Section 2: Colibri Complexity, Optimization & Verification Findings
+    // Section 2: Colibri Complexity, Optimization & Verification Findings (or explicit abstention)
     if (!colibri_highlights.empty()) {
         synth << "\n2. Complexity, Optimization & Verification (Colibri):\n";
         for (const auto& ch : colibri_highlights) {
             synth << "   - " << ch << "\n";
         }
+    } else if (!colibri_abstention.empty()) {
+        synth << "\n2. Verification Note (Colibri):\n";
+        synth << "   - Abstained: " << colibri_abstention << "\n";
     }
 
-    // Section 3: Conflict Resolution & Cross-Engine Validation Summary
+    // Section 3: Conflict Resolution, Source Attribution & Cross-Engine Validation Summary
     synth << "\n3. Validation & Fusion Summary:\n";
     synth << "   - Validation Status: " << (report.validation_passed ? "VERIFIED" : "FLAGGED_WARNINGS")
           << " (Confidence: " << static_cast<int>( std::round(report.overall_confidence * 100.0f) ) << "%)\n";
@@ -579,6 +672,22 @@ FusionReport ResultFusionEngine::fuse(
         for (const auto& rc : report.resolved_conflicts) {
             synth << "   - Conflict Resolved: " << rc << "\n";
         }
+    }
+    if (!report.preserved_disagreements.empty()) {
+        for (const auto& pd : report.preserved_disagreements) {
+            synth << "   - Preserved Disagreement: " << pd << "\n";
+        }
+    }
+    if (!report.rejected_claims.empty()) {
+        synth << "   - Rejected/Abstained Claims: " << report.rejected_claims.size() << "\n";
+    }
+    if (!report.source_attributions.empty()) {
+        synth << "   - Sources: ";
+        for (size_t i = 0; i < report.source_attributions.size(); ++i) {
+            if (i > 0) synth << "; ";
+            synth << report.source_attributions[i];
+        }
+        synth << "\n";
     }
 
     report.synthesized_response = synth.str();

@@ -229,6 +229,20 @@ endif()
 add_dependencies(agr_core agr_shaders)
 
 # =============================================================================
+# agr_generation - Phase 33: generation budgets, stop handling, prompt templates
+# =============================================================================
+
+add_library(agr_generation STATIC
+    src/generation/GenerationBudget.cpp
+    src/generation/PromptTemplates.cpp
+    src/generation/SemanticEvaluator.cpp
+)
+
+target_include_directories(agr_generation PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# =============================================================================
 # agr_llm - Phase 3: llama.cpp adapter
 # =============================================================================
 
@@ -242,6 +256,7 @@ target_include_directories(agr_llm PUBLIC
 
 target_link_libraries(agr_llm PUBLIC
     agr_core
+    agr_generation
     llama
 )
 
@@ -414,6 +429,7 @@ target_include_directories(agr_hydroxl PUBLIC
 target_link_libraries(agr_hydroxl PUBLIC
     agr_engine
     agr_core
+    agr_generation
 )
 
 add_dependencies(agr_hydroxl agr_shaders)
@@ -703,6 +719,7 @@ add_library(agr_orchestration STATIC
     ${ORCHESTRATION_SRCS}
     src/colibri/ColibriEngine.cpp
     src/collaboration/CollaborativeResourceManager.cpp
+    src/collaboration/ColibriVerifier.cpp
     src/collaboration/WorkloadPartitioner.cpp
     src/collaboration/ResultFusionEngine.cpp
     src/collaboration/CollaborativeExecutionOrchestrator.cpp

@@ -16,6 +16,8 @@
 #include <array>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace agr {
@@ -56,7 +58,16 @@ public:
 
     /// Encode a UTF-8 string to a sequence of token IDs.
     /// Prepends BOS token if add_bos=true.
-    std::vector<TokenID> encode(const std::string& text, bool add_bos = true) const;
+    /// With parse_special=true (GPT-2/BPE tokenizers only), literal control
+    /// markers such as <|im_start|> are emitted as their single special token
+    /// ids instead of being split into ordinary byte-level pieces. Callers must
+    /// sanitize untrusted text first (see generation::sanitizeControlTokens).
+    std::vector<TokenID> encode(const std::string& text, bool add_bos = true,
+                                bool parse_special = false) const;
+
+    /// True when `id` ends generation: the model EOS plus end-of-turn control
+    /// tokens (<|im_end|>, <|endoftext|>, <|eot_id|>, <end_of_turn>, ...).
+    bool isEndOfGeneration(TokenID id) const;
 
     /// Decode a sequence of token IDs to a UTF-8 string.
     std::string decode(const std::vector<TokenID>& ids, bool skip_special = true) const;
@@ -119,6 +130,15 @@ private:
     TokenID bos_id_ = 151643;
     TokenID eos_id_ = 151645;
     TokenID unk_id_ = TOKEN_INVALID;
+
+    // Phase 33: literal special-token strings (control/user-defined) used when
+    // encoding with parse_special, longest first; and the end-of-generation set.
+    std::vector<std::pair<std::string, TokenID>> special_pieces_;
+    std::unordered_set<TokenID> eog_ids_;
+    void buildSpecialTables();
+
+    // Byte-level BPE of a plain text segment (no BOS, no special parsing).
+    std::vector<TokenID> encodePlainBpe(const std::string& text) const;
 
     mutable std::string last_error_;
 };

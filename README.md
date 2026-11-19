@@ -22,7 +22,7 @@ HeteroAccel is a unified, hardware-adaptive, collaborative multi-engine inferenc
 <img src="docs/pipeline.svg" alt="Pipeline: detect, check, plan, execute, fall back safely" width="100%">
 
 > [!IMPORTANT]
-> **Hardware validation scope (`PHYSICALLY HARDWARE-VALIDATED` vs. `SOFTWARE-TESTED` vs. `COMPILE-TESTED`).** Every feature documented below is backed by source code and automated CTest targets (`136/136` passing with zero skips). Physical hardware validation and end-to-end benchmarks in this repository were measured on **12th Gen Intel Core i5-1235U (10C/12T) + Intel Iris Xe Graphics (Vulkan 1.3.250, 16 GB RAM, Windows 11)**. CUDA runtime driver probing, memory management (`cuMemAlloc_v2` / `cuMemcpyHtoD_v2` / `cuMemcpyDtoH_v2`), `GGML_CUDA` compilation (verified on Linux CI with CUDA Toolkit 12.6), and automatic CUDA-to-CPU fallback are implemented and tested; physical NVIDIA GPU inference execution requires an NVIDIA GPU host and is explicitly classified as pending physical hardware in [docs/PHASE_32_FINAL_ENGINEERING_REPORT.md](docs/PHASE_32_FINAL_ENGINEERING_REPORT.md) and [docs/RELEASE_VALIDATION_REPORT.md](docs/RELEASE_VALIDATION_REPORT.md).
+> **Hardware validation scope (`Physically validated` vs. `Runtime-tested` vs. `CI-tested` vs. `Build-tested` vs. `Blocked / Unevidenced`).** Every feature documented below is backed by source code and automated CTest targets (`137/137` passing with zero skips). Physical hardware validation and end-to-end benchmarks in this repository were measured on **12th Gen Intel Core i5-1235U (10C/12T) + Intel Iris Xe Graphics (Vulkan 1.3.250, 16 GB RAM, Windows 11)**. CUDA runtime driver probing, memory management (`cuMemAlloc_v2` / `cuMemcpyHtoD_v2` / `cuMemcpyDtoH_v2`), `GGML_CUDA` compilation (verified on Linux CI with CUDA Toolkit 12.6), and automatic CUDA-to-CPU fallback are `Implemented` + `Build-tested` + `Runtime-tested` (fallback/absence); physical NVIDIA GPU inference execution is **`Blocked / Unevidenced`** on this host because no NVIDIA GPU is installed (documented in [docs/PHASE_33_EVALUATION_REPORT.md](docs/PHASE_33_EVALUATION_REPORT.md), [docs/PHASE_32_FINAL_ENGINEERING_REPORT.md](docs/PHASE_32_FINAL_ENGINEERING_REPORT.md), and [docs/RELEASE_VALIDATION_REPORT.md](docs/RELEASE_VALIDATION_REPORT.md)).
 
 ## 📑 Contents
 
@@ -184,6 +184,7 @@ Every quantization type listed below is decoded by `HydroXLDequant` and verified
 | 30 | Documentation audit, version `0.30.0` sync, release validation report | ✅ Implemented | Release validation report in [docs/RELEASE_VALIDATION_REPORT.md](docs/RELEASE_VALIDATION_REPORT.md). |
 | 31 | Unified Collaborative Multi-Engine Runtime (`HydroXL` + `llama.cpp` + `Colibri`) | ✅ Implemented | `ColibriEngine`, `QueryUnderstandingEngine`, `WorkloadPartitioner`, `CollaborativeExecutionOrchestrator`, `ResultFusionEngine` (`test_p31_*`). |
 | 32 | Final cross-validation, UTF-8 streaming stabilization, OS RSS telemetry & release | ✅ Implemented | Streaming UTF-8 codepoint buffer, single-line nested loop parser, selective 1-engine fast paths, anti-majority-vote fusion, 136/136 tests (`test_p32_release_validation`), [docs/PHASE_32_FINAL_ENGINEERING_REPORT.md](docs/PHASE_32_FINAL_ENGINEERING_REPORT.md). |
+| 33 | Response quality, generation budgets, prompt isolation & optional Colibri verification | Implemented + Build-tested + Runtime-tested | Central `GenerationBudget` task profiles, versioned `PromptRegistry` (`<data>` delimiting & control-token sanitization), optional `ColibriVerifier` abstention/relevance gate, evidence-driven fusion, constrained Python + semantic eval (`test_p33_response_quality`), 137/137 tests, [docs/PHASE_33_EVALUATION_REPORT.md](docs/PHASE_33_EVALUATION_REPORT.md). |
 
 ---
 
@@ -447,21 +448,22 @@ Detailed methodology and optimization analysis are in [docs/BENCHMARKING.md](doc
 ## 🧪 Testing
 
 ```powershell
-# Run the complete 136-test suite in Release mode
+# Run the complete 137-test suite in Release mode
 ctest --test-dir build -C Release --output-on-failure --parallel 2
 
-# Run Phase 26–32 verification suites
-ctest --test-dir build -C Release -R "test_p26|test_p27|test_p28|test_p29|test_p31|test_p32" --output-on-failure
+# Run Phase 26–33 verification suites
+ctest --test-dir build -C Release -R "test_p26|test_p27|test_p28|test_p29|test_p31|test_p32|test_p33" --output-on-failure
 ```
 
-- **136 automated test targets** registered in `tests/CMakeLists.txt`.
-- Latest full-suite verification on Windows 11 (Intel Core i5-1235U + Intel Iris Xe): **`100% tests passed, 0 tests failed, 0 skipped out of 136`**.
+- **137 automated test targets** registered in `tests/CMakeLists.txt`.
+- Latest full-suite verification on Windows 11 (Intel Core i5-1235U + Intel Iris Xe Graphics Vulkan 1.3.250): **`100% tests passed, 0 tests failed, 0 skipped out of 137`** (`Runtime-tested` on Windows CPU+Vulkan; NVIDIA CUDA execution remains `Blocked / Unevidenced` without a physical NVIDIA GPU).
 - **Phase 26 (`test_p26_*`)**: CUDA Driver API probing, `CUDAAllocator` allocation/transfer/cleanup, `LlamaCppEngineAdapter` registration, and CUDA-to-CPU fallback.
 - **Phase 27 (`test_p27_*`)**: Exact numerical verification for all 13 GGML quantization decoders (`Q4_0` through `Q8_K`, `F16`, `F32`) and synthetic GGUF v3 end-to-end forward-pass tests for `llama`, `mistral`, `qwen2`, `phi3`, `gemma`, and `gemma2`.
 - **Phase 28 (`test_p28_*`)**: Cross-platform `DynamicLibrary`, filesystem/threading portability, and software-Vulkan (`llvmpipe`/`lavapipe`/`SwiftShader`) rejection.
 - **Phase 29 (`test_p29_*`)**: End-to-end performance regression gates, multi-threaded `matvec` numerical equivalence, and real-model greedy token equivalence between HydroXL and `llama.cpp`.
 - **Phase 31 (`test_p31_*`)**: `ColibriEngine` structural & complexity analysis, `WorkloadPartitioner` DAG construction, `CollaborativeResourceManager` contention avoidance, `ResultFusionEngine` synthesis, and `CollaborativeExecutionOrchestrator` end-to-end tests.
 - **Phase 32 (`test_p32_release_validation`)**: 20-case UTF-8 & split-multibyte BPE streaming validation, 12-scenario engine-selection & hardware-scheduling matrix, HydroXL Vulkan quantization capability gates, 11 `ResultFusionEngine` edge cases (including 2-vs-1 anti-majority-voting structural precedence), OS RSS telemetry & 5x repeated execution stability, and live 151,936-vocab Qwen2.5 multilingual streaming.
+- **Phase 33 (`test_p33_response_quality`)**: `GenerationBudget` task profiles & clamping, versioned `PromptRegistry` (`<data>` delimiting & control-token sanitization), 4-thread request isolation, `HydroXLTokenizer` special/EOG handling, optional `ColibriVerifier` abstention/relevance gate, evidence-driven fusion (no fabricated corroboration + preserved disagreements), negative controls (`max_tokens`, `cancel`, `time_budget`), plus optional live 3-backend semantic + constrained Python evaluation (`docs/PHASE_33_EVALUATION_REPORT.md`).
 
 ---
 
@@ -502,16 +504,17 @@ ctest --test-dir build -C Release -R "test_p26|test_p27|test_p28|test_p29|test_p
 │   ├── hydroxl/              Phase 17–32: GGUF loader, 7 architectures, 13 quant decoders, UTF-8 streaming tokenizer, VulkanTensorOps
 │   ├── plugin/               Phase 18/28: Plugin ABI v1 and cross-platform PluginLoader
 │   ├── orchestration/        Phase 21–32: EngineOrchestrator, HardwareDetector, HydroXL, LlamaCpp & Colibri adapters
-│   ├── colibri/              Phase 31–32: ColibriEngine deterministic structural, complexity & verification analyzer
-│   ├── collaboration/        Phase 31–32: QueryUnderstandingEngine, WorkloadPartitioner, CollaborativeResourceManager, ResultFusionEngine, CollaborativeExecutionOrchestrator
-│   ├── sdk/                  Phase 23–32: Public C/C++ SDK implementation (ha_infer, ha_collaborate), MemoryEstimator, PerfProfile
+│   ├── colibri/              Phase 31–33: ColibriEngine deterministic structural, complexity & algorithm verification engine
+│   ├── collaboration/        Phase 31–33: QueryUnderstandingEngine, WorkloadPartitioner, ColibriVerifier, CollaborativeResourceManager, ResultFusionEngine, CollaborativeExecutionOrchestrator
+│   ├── generation/           Phase 33: GenerationBudget, PromptRegistry, SemanticEvaluator
+│   ├── sdk/                  Phase 23–33: Public C/C++ SDK implementation (ha_infer, ha_collaborate), MemoryEstimator, PerfProfile
 │   ├── benchmark/            Phase 29: EndToEndBench harness and heteroaccel-bench CLI
 │   └── cli/main.cpp          adaptive-gpu CLI command dispatcher (Wide-char Windows UTF-8 arg support)
 ├── examples/                 Public C (c_example.c) and C++ (cpp_example.cpp) consumer examples
 ├── python/                   Python ctypes bindings (heteroaccel.py) and unit tests
 ├── shaders/                  GLSL compute shaders compiled to SPIR-V at build time
-├── tests/                    136 automated CTest executables (Phases 1–32)
-├── docs/                     Architecture notes, benchmark reports, and PHASE_32_FINAL_ENGINEERING_REPORT.md
+├── tests/                    137 automated CTest executables (Phases 1–33)
+├── docs/                     Architecture notes, benchmark reports, PHASE_32_FINAL_ENGINEERING_REPORT.md, and PHASE_33_EVALUATION_REPORT.md
 ├── LICENSE                   MIT License
 └── Security.md               Security policy and vulnerability reporting
 ```
@@ -550,6 +553,7 @@ ctest --test-dir build -C Release -R "test_p26|test_p27|test_p28|test_p29|test_p
 ## 🔗 Links
 
 - Repository: <https://github.com/Deep455-16/HeteroAccel>
+- Phase 33 Response Quality & Evaluation Report: [docs/PHASE_33_EVALUATION_REPORT.md](docs/PHASE_33_EVALUATION_REPORT.md)
 - Phase 32 Final Engineering & Release Report: [docs/PHASE_32_FINAL_ENGINEERING_REPORT.md](docs/PHASE_32_FINAL_ENGINEERING_REPORT.md)
 - Supported Models & Quantizations: [docs/SUPPORTED_MODELS_AND_QUANTS.md](docs/SUPPORTED_MODELS_AND_QUANTS.md)
 - Benchmarking Guide: [docs/BENCHMARKING.md](docs/BENCHMARKING.md)

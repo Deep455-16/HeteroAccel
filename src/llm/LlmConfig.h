@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace agr {
 
@@ -29,6 +30,12 @@ struct LlmConfig {
     uint32_t seed           = 42;     // RNG seed for reproducibility
     int      n_threads      = 0;      // 0 = auto-select
     bool     capture_first_logits = false; // copy first-token logits into LlmResult (numerical validation)
+
+    // Phase 33 generation controls (0 / empty = unbounded / disabled)
+    int      time_budget_ms = 0;            // wall-clock limit for the generation loop
+    std::vector<std::string> stop_sequences; // generation stops before any of these
+    bool     parse_special = true;          // treat <|...|> control markers in prompt as special tokens
+    float    repeat_penalty = 1.0f;         // 1.0 = disabled (preserves pure greedy equivalence)
 
     // Helpers
     int effective_gpu_layers() const {

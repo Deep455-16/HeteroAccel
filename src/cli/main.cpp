@@ -11,6 +11,7 @@
 #include "scheduler/AdaptiveScheduler.h"
 #include "scheduler/CostModel.h"
 #include "inference/HeteroRuntime.h"
+#include "generation/GenerationBudget.h"
 #include "hydroxl/HydroXLEngine.h"
 #include "orchestration/EngineOrchestrator.h"
 #include "orchestration/OrchestratorInit.h"
@@ -327,10 +328,15 @@ void printUsage() {
     std::cout << "  Set HETEROACCEL_MODEL_PATH env var as an alternative to --model.\n\n";
     std::cout << "Phase 7 & Unified Collaborative Multi-Engine commands:\n";
     std::cout << "  adaptive-gpu collaborate --model <path.gguf> --prompt \"...\" [options]\n";
-    std::cout << "    --max-tokens <N>          Max new tokens per engine task (default: 24)\n";
+    std::cout << "    --profile <name>          Task profile (auto|short_answer|explanation|code|long_form|retrieval_grounded)\n";
+    std::cout << "    --max-tokens <N>          Max new tokens per engine task (default: profile budget)\n";
+    std::cout << "    --time-budget-ms <ms>     Wall-clock time limit per task (ms)\n";
+    std::cout << "    --stop <seq>              Stop sequence (repeatable)\n";
+    std::cout << "    --context <text>          Untrusted reference context block (<data>)\n";
+    std::cout << "    --no-colibri              Disable optional Colibri verification\n";
     std::cout << "    --gpu-backend <backend>   Preferred GPU backend (auto|vulkan|cuda|cpu)\n";
     std::cout << "    --memory-budget-mb <MB>   Max RAM budget in MB for collaborative execution\n";
-    std::cout << "    --n-ctx <N>               Context window length (default: 512)\n";
+    std::cout << "    --n-ctx <N>               Context window length (default: profile budget)\n";
     std::cout << "    --sequential              Force sequential wave execution\n";
     std::cout << "  adaptive-gpu run --model <path.gguf> --prompt \"...\" [--collaborate|--single-engine]\n";
     std::cout << "  adaptive-gpu chat --model <path.gguf> [--collaborate|--single-engine]\n\n";
@@ -350,16 +356,21 @@ void printUsage() {
 
 void printCollaborateUsage() {
     std::cout << "adaptive-gpu collaborate - Unified Collaborative Multi-Engine Inference\n"
-              << "Coordinates HydroXL (native), llama.cpp (compatibility), and Colibri (verification)\n\n"
+              << "Coordinates HydroXL (native), llama.cpp (compatibility), and optional Colibri (verification)\n\n"
               << "Usage:\n"
               << "  adaptive-gpu collaborate --model <path.gguf> --prompt \"<query>\" [options]\n\n"
               << "Options:\n"
               << "  --model <path.gguf>       Path to GGUF model (or set HETEROACCEL_MODEL_PATH)\n"
               << "  --prompt <text>           User prompt to decompose and execute collaboratively\n"
-              << "  --max-tokens <N>          Maximum tokens generated per engine task (default: 24)\n"
+              << "  --profile <name>          auto, short_answer, explanation, code, long_form, retrieval_grounded\n"
+              << "  --max-tokens <N>          Maximum tokens generated per engine task (default: profile budget)\n"
+              << "  --time-budget-ms <ms>     Wall-clock time budget per task in milliseconds\n"
+              << "  --stop <seq>              Stop sequence (can be repeated)\n"
+              << "  --context <text>          Untrusted reference context wrapped inside <data>\n"
+              << "  --no-colibri              Run without optional Colibri static verification\n"
               << "  --gpu-backend <name>      Preferred GPU backend: auto, vulkan, cuda, cpu\n"
               << "  --memory-budget-mb <MB>   Override maximum RAM budget in MB\n"
-              << "  --n-ctx <N>               Context window length (default: 512)\n"
+              << "  --n-ctx <N>               Context window length (default: profile budget)\n"
               << "  --sequential              Execute tasks sequentially instead of parallel waves\n"
               << "  --help, -h                Show this help message\n";
 }
@@ -534,23 +545,46 @@ int runCollaborateCommand(const std::vector<std::string>& args) {
     std::string model_path;
     std::string prompt = "Explain virtual memory and analyze page-table lookup complexity.";
     std::string gpu_backend;
-    int max_tokens = 24;
+    std::string profile_name = "auto";
+    std::string untrusted_context;
+    std::vector<std::string> stop_sequences;
+    int max_tokens = 0;
     int budget_mb = 0;
-    int n_ctx = 512;
+    int n_ctx = 0;
+    int time_budget_ms = 0;
     bool sequential = false;
+    bool enable_colibri = true;
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--help" || args[i] == "-h") {
             printCollaborateUsage();
             return 0;
         }
-        if (parseStringArg(args, i, "--model",       model_path))  continue;
-        if (parseStringArg(args, i, "--prompt",      prompt))      continue;
-        if (parseStringArg(args, i, "--gpu-backend", gpu_backend)) continue;
-        if (parseIntArg(args, i,    "--max-tokens",  max_tokens))  continue;
-        if (parseIntArg(args, i,    "--memory-budget-mb", budget_mb)) continue;
-        if (parseIntArg(args, i,    "--n-ctx",       n_ctx))       continue;
+        if (parseStringArg(args, i, "--model",       model_path))        continue;
+        if (parseStringArg(args, i, "--prompt",      prompt))            continue;
+        if (parseStringArg(args, i, "--gpu-backend", gpu_backend))       continue;
+        if (parseStringArg(args, i, "--profile",     profile_name))      continue;
+        if (parseStringArg(args, i, "--context",     untrusted_context)) continue;
+        {
+            std::string stop;
+            if (parseStringArg(args, i, "--stop", stop)) {
+                if (!stop.empty()) stop_sequences.push_back(std::move(stop));
+                continue;
+            }
+        }
+        if (parseIntArg(args, i,    "--max-tokens",  max_tokens))        continue;
+        if (parseIntArg(args, i,    "--memory-budget-mb", budget_mb))    continue;
+        if (parseIntArg(args, i,    "--n-ctx",       n_ctx))             continue;
+        if (parseIntArg(args, i,    "--time-budget-ms", time_budget_ms)) continue;
         if (args[i] == "--sequential") { sequential = true; continue; }
+        if (args[i] == "--no-colibri") { enable_colibri = false; continue; }
+    }
+
+    agr::generation::TaskProfile profile = agr::generation::TaskProfile::AUTO;
+    if (!agr::generation::profileFromString(profile_name, profile)) {
+        std::cerr << "ERROR: Unknown --profile '" << profile_name
+                  << "'. Valid values: auto, short_answer, explanation, code, long_form, retrieval_grounded.\n";
+        return 1;
     }
 
     if (model_path.empty()) {
@@ -583,6 +617,11 @@ int runCollaborateCommand(const std::vector<std::string>& args) {
     creq.prompt = prompt;
     creq.max_new_tokens_per_task = max_tokens;
     creq.n_ctx = n_ctx;
+    creq.task_profile = profile;
+    creq.time_budget_ms = time_budget_ms;
+    creq.stop_sequences = std::move(stop_sequences);
+    creq.untrusted_context = std::move(untrusted_context);
+    creq.enable_colibri = enable_colibri;
     creq.allow_parallel_waves = !sequential;
     creq.preferred_gpu_backend = gpu_backend;
     if (budget_mb > 0) {
@@ -1056,14 +1095,38 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
     std::string model_path;
     std::string prompt = "Tell me about adaptive GPU computing.";
     std::string forced_backend;
-    int max_tokens = 128;
+    std::string profile_name = "auto";
+    std::vector<std::string> stop_sequences;
+    int max_tokens = 0;
+    int time_budget_ms = 0;
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (parseStringArg(args, i, "--model",   model_path))     continue;
         if (parseStringArg(args, i, "--prompt",  prompt))         continue;
         if (parseStringArg(args, i, "--backend", forced_backend)) continue;
-        if (parseIntArg(args, i, "--max-tokens", max_tokens))     continue;
+        if (parseStringArg(args, i, "--profile", profile_name))   continue;
+        {
+            std::string stop;
+            if (parseStringArg(args, i, "--stop", stop)) {
+                if (!stop.empty()) stop_sequences.push_back(std::move(stop));
+                continue;
+            }
+        }
+        if (parseIntArg(args, i, "--max-tokens", max_tokens))         continue;
+        if (parseIntArg(args, i, "--time-budget-ms", time_budget_ms)) continue;
     }
+
+    agr::generation::TaskProfile profile = agr::generation::TaskProfile::AUTO;
+    if (!agr::generation::profileFromString(profile_name, profile)) {
+        std::cerr << "ERROR: Unknown --profile '" << profile_name
+                  << "'. Valid values: auto, short_answer, explanation, code, long_form, retrieval_grounded.\n";
+        return 1;
+    }
+    agr::generation::BudgetOverrides ov;
+    ov.max_output_tokens = max_tokens;
+    ov.time_budget_ms = time_budget_ms;
+    ov.extra_stop_sequences = stop_sequences;
+    auto bres = agr::generation::resolveBudget(profile, ov);
 
     if (model_path.empty()) {
         const char* env = std::getenv("HETEROACCEL_MODEL_PATH");
@@ -1143,7 +1206,9 @@ int runInferOrchCommand(const std::vector<std::string>& args) {
 
     orchestration::InferenceRequest ireq;
     ireq.prompt = prompt;
-    ireq.max_new_tokens = max_tokens;
+    ireq.max_new_tokens = bres.budget.max_output_tokens;
+    ireq.time_budget_ms = bres.budget.time_budget_ms;
+    ireq.stop_sequences = bres.budget.stop_sequences;
     ireq.temperature = 0.8f;
     ireq.top_p = 0.95f;
     ireq.stream = true;

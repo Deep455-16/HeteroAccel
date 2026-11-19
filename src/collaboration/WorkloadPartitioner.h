@@ -20,6 +20,11 @@ struct PartitionPlan {
     std::vector<std::vector<std::string>> waves; ///< Task IDs per topological wave
     bool memory_constrained_mode = false;
     std::string plan_summary;
+
+    // Phase 33: resolved generation budget and template warnings
+    generation::TaskProfile resolved_profile = generation::TaskProfile::EXPLANATION;
+    generation::GenerationBudget effective_budget;
+    std::vector<std::string> budget_warnings;
 };
 
 class WorkloadPartitioner {

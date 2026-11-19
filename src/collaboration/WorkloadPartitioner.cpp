@@ -3,6 +3,8 @@
 
 #include "collaboration/WorkloadPartitioner.h"
 #include "execution/ExecutionGraph.h"
+#include "generation/GenerationBudget.h"
+#include "generation/PromptTemplates.h"
 
 #include <algorithm>
 #include <cctype>
@@ -43,6 +45,82 @@ bool hydroxlSupportsArch(const std::string& arch_raw) {
 bool hydroxlSupportsVulkanQuant(int quant_type) {
     // HydroXL Vulkan shaders natively execute F32 (0), F16 (1), Q5_1 (7), Q8_0 (8)
     return quant_type == 0 || quant_type == 1 || quant_type == 7 || quant_type == 8;
+}
+
+generation::TaskProfile resolveProfile(QueryCategory category, const CollaborativeRequest& req) {
+    if (req.task_profile != generation::TaskProfile::AUTO) {
+        return req.task_profile;
+    }
+    if (!req.untrusted_context.empty()) {
+        return generation::TaskProfile::RETRIEVAL_GROUNDED;
+    }
+    switch (category) {
+        case QueryCategory::SIMPLE_FACTUAL_QA:
+            return generation::TaskProfile::SHORT_ANSWER;
+        case QueryCategory::CODE_ANALYSIS_AND_OPTIMIZATION:
+        case QueryCategory::DEBUGGING_AND_VERIFICATION:
+        case QueryCategory::STATIC_COMPLEXITY_ONLY:
+            return generation::TaskProfile::CODE;
+        default:
+            return generation::TaskProfile::EXPLANATION;
+    }
+}
+
+const char* templateIdForTask(QueryCategory category, TaskType task_type, bool has_untrusted_context) {
+    if (has_untrusted_context) return "task.grounded";
+    if (category == QueryCategory::SIMPLE_FACTUAL_QA) return "task.direct_qa";
+    switch (task_type) {
+        case TaskType::STRUCTURAL_AND_REASONING:      return "task.structural_reasoning";
+        case TaskType::IMPLEMENTATION_AND_EDGE_CASES: return "task.implementation";
+        case TaskType::PRACTICAL_EXAMPLES:            return "task.examples";
+        case TaskType::CONCEPTUAL_EXPLANATION:
+        default:                                      return "task.conceptual";
+    }
+}
+
+void attachPromptTemplate(CollaborativeTask& task,
+                          QueryCategory category,
+                          const CollaborativeRequest& req,
+                          const ModelMemoryProfile& model_profile,
+                          PartitionPlan& plan) {
+    task.stop_sequences = plan.effective_budget.stop_sequences;
+    if (!req.use_prompt_templates || task.assigned_engine == EngineId::COLIBRI) {
+        return;
+    }
+
+    generation::AssembleRequest areq;
+    areq.template_id = templateIdForTask(category, task.task_type, !req.untrusted_context.empty());
+    areq.family = generation::familyForArchitecture(model_profile.arch);
+    areq.query = req.prompt;
+    areq.untrusted_context = req.untrusted_context;
+    areq.history.reserve(req.conversation_history.size());
+    for (const auto& turn : req.conversation_history) {
+        areq.history.push_back({turn.first, turn.second});
+    }
+    areq.prompt_token_budget = std::max(
+        64, plan.effective_budget.context_tokens - plan.effective_budget.max_output_tokens);
+
+    generation::RenderedPrompt rendered = generation::PromptRegistry::builtin().assemble(areq);
+    for (const auto& w : rendered.warnings) {
+        plan.budget_warnings.push_back(task.task_id + ": " + w);
+    }
+    if (!rendered.ok) {
+        if (!rendered.error.empty()) {
+            plan.budget_warnings.push_back(task.task_id + " template fallback: " + rendered.error);
+        }
+        return;
+    }
+
+    task.assembled_prompt = std::move(rendered.text);
+    task.template_id = std::move(rendered.template_id);
+    task.template_version = rendered.template_version;
+    task.uses_control_tokens = rendered.uses_control_tokens;
+    for (const auto& st : rendered.stop_sequences) {
+        if (std::find(task.stop_sequences.begin(), task.stop_sequences.end(), st) ==
+            task.stop_sequences.end()) {
+            task.stop_sequences.push_back(st);
+        }
+    }
 }
 
 } // namespace
@@ -207,6 +285,18 @@ PartitionPlan WorkloadPartitioner::createPlan(
 
     PartitionPlan plan;
     plan.query_category = classifyQuery(req.prompt);
+    plan.resolved_profile = resolveProfile(plan.query_category, req);
+    generation::BudgetOverrides ov;
+    ov.max_output_tokens = req.max_new_tokens_per_task;
+    ov.context_tokens = req.n_ctx;
+    ov.time_budget_ms = req.time_budget_ms;
+    ov.max_retries = req.max_retries;
+    ov.extra_stop_sequences = req.stop_sequences;
+    {
+        auto bres = generation::resolveBudget(plan.resolved_profile, ov);
+        plan.effective_budget = std::move(bres.budget);
+        plan.budget_warnings = std::move(bres.warnings);
+    }
     plan.memory_constrained_mode = !resource_mgr.canKeepConcurrentNeuralEngines(model_profile);
 
     // Format conversation context prefix if history is present
@@ -221,8 +311,9 @@ PartitionPlan WorkloadPartitioner::createPlan(
     std::string full_query = conv_prefix.empty() ? req.prompt : (conv_prefix + "User: " + req.prompt);
 
     // Check for single-engine specialized or simple factual categories (Stage 2.5 & Stage 3)
-    if (plan.query_category == QueryCategory::MODEL_METADATA_INSPECTION ||
-        plan.query_category == QueryCategory::STATIC_COMPLEXITY_ONLY) {
+    if (req.enable_colibri &&
+        (plan.query_category == QueryCategory::MODEL_METADATA_INSPECTION ||
+         plan.query_category == QueryCategory::STATIC_COMPLEXITY_ONLY)) {
         CollaborativeTask t_col;
         t_col.task_id = "task_1_colibri";
         t_col.task_type = (plan.query_category == QueryCategory::MODEL_METADATA_INSPECTION)
@@ -280,6 +371,7 @@ PartitionPlan WorkloadPartitioner::createPlan(
             t_qa.rejected_candidates.push_back("hydroxl: rejected (" + eng_reason + ")");
         }
         t_qa.rejected_candidates.push_back("colibri: skipped (no structural code or multi-engine cross-verification required)");
+        attachPromptTemplate(t_qa, plan.query_category, req, model_profile, plan);
         t_qa.wave_index = 0;
         t_qa.state = TaskState::READY;
         plan.tasks = {t_qa};
@@ -319,6 +411,7 @@ PartitionPlan WorkloadPartitioner::createPlan(
     switch (plan.query_category) {
         case QueryCategory::CODE_ANALYSIS_AND_OPTIMIZATION:
         case QueryCategory::DEBUGGING_AND_VERIFICATION:
+        case QueryCategory::STATIC_COMPLEXITY_ONLY:
             t1.task_type = TaskType::STRUCTURAL_AND_REASONING;
             t1.description = "Structural control-flow and reasoning analysis";
             t1.input_context = full_query;
@@ -334,6 +427,7 @@ PartitionPlan WorkloadPartitioner::createPlan(
 
         case QueryCategory::COMPLEX_TECHNICAL_QUESTION:
         case QueryCategory::GENERAL_REASONING_AND_SYNTHESIS:
+        default:
             t1.task_type = TaskType::CONCEPTUAL_EXPLANATION;
             t1.description = "Core conceptual architecture and theoretical explanation";
             t1.input_context = full_query;
@@ -392,7 +486,15 @@ PartitionPlan WorkloadPartitioner::createPlan(
     t3.assignment_reason = eng_reason3 + " | " + hw_reason3;
     t3.rejected_candidates.push_back("Vulkan/CUDA: Colibri executes deterministic static analysis on CPU only");
 
-    plan.tasks = {t1, t2, t3};
+    attachPromptTemplate(t1, plan.query_category, req, model_profile, plan);
+    attachPromptTemplate(t2, plan.query_category, req, model_profile, plan);
+
+    if (req.enable_colibri) {
+        plan.tasks = {t1, t2, t3};
+    } else {
+        t1.rejected_candidates.push_back("colibri: disabled by caller policy (optional verifier omitted)");
+        plan.tasks = {t1, t2};
+    }
 
     // Validate DAG and compute topological execution waves using ExecutionGraph
     class CollaborativeGraphNode final : public IExecutionNode {
@@ -483,7 +585,11 @@ PartitionPlan WorkloadPartitioner::createPlan(
             }
         }
     } else {
-        plan.waves = {{"task_1_hydroxl", "task_2_llamacpp"}, {"task_3_colibri"}};
+        if (req.enable_colibri) {
+            plan.waves = {{"task_1_hydroxl", "task_2_llamacpp"}, {"task_3_colibri"}};
+        } else {
+            plan.waves = {{"task_1_hydroxl", "task_2_llamacpp"}};
+        }
     }
 
     std::ostringstream summary;

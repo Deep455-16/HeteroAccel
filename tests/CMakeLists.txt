@@ -383,3 +383,8 @@ agr_add_test(test_p32_release_validation         test_p32_release_validation.cpp
 target_link_libraries(test_p32_release_validation PRIVATE agr_sdk)
 set_tests_properties(test_p32_release_validation PROPERTIES TIMEOUT 300)
 
+# Phase 33 - Response Quality, Generation Control & Colibri Verification
+agr_add_test(test_p33_response_quality           test_p33_response_quality.cpp)
+target_link_libraries(test_p33_response_quality PRIVATE agr_sdk)
+set_tests_properties(test_p33_response_quality PROPERTIES TIMEOUT 600)
+
